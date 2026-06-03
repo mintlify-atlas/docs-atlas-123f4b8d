@@ -23,14 +23,14 @@ The following steps describe the complete journey from an incoming HTTP request 
   <Step title="LocalSettings SiteConfiguration Population">
     Back in `LocalSettings.php`, a large `$wgConf->settings += [...]` block populates hundreds of per-wiki-overridable settings with farm defaults — covering email, uploads, search, ManageWiki parameters, CentralAuth virtual domain mappings, and more. Settings keyed by `dbname` override the `'default'` value for specific wikis.
   </Step>
-  <Step title="ManageWiki Registries">
-    `ManageWikiExtensions.php`, `ManageWikiNamespaces.php`, and `ManageWikiSettings.php` are loaded. These files define the `$wmgManageWikiExtensions`, namespace settings, and `$wmgManageWikiSettings` arrays that the ManageWiki extension reads to build its admin UI and apply per-wiki configuration.
+  <Step title="ManageWiki Extension Registry">
+    `ManageWikiExtensions.php` is loaded immediately after `$wi` is constructed. This file defines the `$wmgManageWikiExtensions` array that the ManageWiki extension reads to build its extension-toggle UI and that `MirahezeFunctions::getActiveExtensions()` consults when resolving which extensions to queue.
   </Step>
   <Step title="Config Globals Resolution">
-    `MirahezeFunctions::getConfigGlobals()` is called. It checks for a fresh `config-{dbname}.php` opcode-cached file. On a miss, it merges the ManageWiki per-wiki cache (from `{dbname}.php` in `CACHE_DIRECTORY`) into `$wgConf->settings`, computes wiki tags (realm, MediaWiki version, active extensions, wiki states), and calls `$wgConf->getAll($wgDBname, ...)` to resolve every setting into a flat globals array. The result is written back to cache. `extract($globals)` applies the resolved settings as PHP globals.
+    `MirahezeFunctions::getConfigGlobals()` is called. It checks for a fresh `config-{dbname}.php` opcode-cached file. On a miss, it merges the ManageWiki per-wiki cache (from `{dbname}.php` in `CACHE_DIRECTORY`) into `$wgConf->settings`, computes wiki tags (realm, MediaWiki version, active extensions, wiki states), and calls `$wgConf->getAll($wgDBname, ...)` to resolve every setting into a flat globals array. The result is written back to cache. `extract($globals)` applies the resolved settings as PHP globals. `ManageWikiNamespaces.php` and `ManageWikiSettings.php` are then loaded to register namespace and settings field definitions for the ManageWiki admin UI.
   </Step>
   <Step title="Database & Cache Configuration">
-    `Database.php` configures `LBFactoryMulti` using `$wi->wikiDBClusters` to route each wiki's database name to the correct MySQL cluster (currently `c1` → `db-c1-us-east-021`). `GlobalCache.php` configures Redis as the main and message cache, sets up the `parsercache-multiwrite` parser cache (Redis primary, SQL secondary), and tunes TTLs for parser, session, and revision caches.
+    `Database.php` configures `LBFactoryMulti` using `$wi->wikiDBClusters` to route each wiki's database name to the correct MySQL cluster (currently `c1` → `db-c1-us-east-021`). `GlobalCache.php` configures Redis as the main and message cache, sets up the `parsercache-multiwrite` parser cache (currently Redis only; a SQL durable-fallback is defined but commented out), and tunes TTLs for parser, session, and revision caches.
   </Step>
   <Step title="GlobalSettings & LocalWiki">
     `GlobalSettings.php` applies farm-wide runtime settings: loading CentralAuth, GlobalPreferences, GlobalBlocking, and RemovePII; enforcing `$wgCentralAuthStrict`; and conditionally loading extension dependencies (e.g., Bootstrap for Chameleon, Elastica for CirrusSearch). `LocalWiki.php` applies per-wiki special-case overrides using a `switch ($wi->dbname)` block — for example, loading SecurePoll and RequestCustomDomain only for `metawiki`.
@@ -107,7 +107,7 @@ When `$wmgSharedDomainPathPrefix` is active, the following changes take effect:
     **MySQL cluster routing.** Configures `LBFactoryMulti` with `$wi->wikiDBClusters` (sourced from the `c` column in the CreateWiki databases cache) to route each wiki to its assigned MySQL cluster. Currently a single cluster `c1` backed by `db-c1-us-east-021`. Connection parameters are drawn from `PrivateSettings.php`.
   </Card>
   <Card title="GlobalCache.php" icon="bolt">
-    **Redis and parser cache configuration.** Sets Redis as `$wgMainCacheType` and `$wgMessageCacheType`, configures the `parsercache-multiwrite` object cache (Redis primary with SQL as a durable fallback), and sets per-content-type TTLs: 15 days for parser cache, 10 days for DiscussionTools, 3 days for revisions, 1 day for sessions. Sidebar caching is disabled when serving via the shared domain.
+    **Redis and parser cache configuration.** Sets Redis as `$wgMainCacheType` and `$wgMessageCacheType`, configures the `parsercache-multiwrite` object cache (currently Redis only; a SQL durable-fallback backend is present in the file but commented out), and sets per-content-type TTLs: 15 days for parser cache, 10 days for DiscussionTools, 3 days for revisions, 1 day for sessions. Sidebar caching is enabled on normal requests and disabled when serving via the shared domain.
   </Card>
   <Card title="LocalWiki.php" icon="wrench">
     **Per-wiki special-case overrides.** Uses `switch ($wi->dbname)` to apply overrides that cannot be expressed through `$wgConf->settings` or ManageWiki. Examples: `metawiki` loads SecurePoll and RequestCustomDomain; `testwiki` loads EnhancedUpload, OOJSPlus, and Citoid with a custom service URL.

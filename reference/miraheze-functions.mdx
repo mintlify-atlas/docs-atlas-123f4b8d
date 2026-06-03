@@ -80,7 +80,7 @@ These are declared `public readonly` on the instance (`$wi`) created in `LocalSe
   Returns the merged list of all active and deleted database names. Sets `$wgLocalDatabases` as a side effect. Uses a static cache so it is only computed once per process. Called by `setupSiteConfiguration()`.
 </ParamField>
 
-<ParamField path="readDbListFile(string $listFile, bool $onlyDBs = true, ?string $database = null, bool $fromServer = false)" type="static: array|string|bool">
+<ParamField path="readDbListFile(string $listFile, bool $onlyDBs = true, ?string $database = null, bool $fromServer = false)" type="static: array|string">
   Reads a PHP cache file from `CACHE_DIRECTORY` (e.g. `databases.php`, `deleted.php`). When `$database` is provided and `$fromServer` is `true`, reverse-looks up a DB name from a server URL. When `$onlyDBs` is `true`, returns a flat array of DB name strings; otherwise returns the full associative data array. Returns `[]` when the cache file is missing or empty. Respects `$wgDatabaseClustersMaintenance` — if the current wiki's cluster is in maintenance, it calls `DatabaseMaintenance.php` immediately.
 </ParamField>
 

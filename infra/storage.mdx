@@ -63,15 +63,13 @@ All user-uploaded media on WikiOasis is stored in Cloudflare R2, accessed throug
 
 ## Supported File Types
 
-The default `$wgFileExtensions` list covers images, documents, audio, video, and 3D formats:
+The default `$wgFileExtensions` list is defined in `LocalSettings.php` and covers the following types:
 
 | Category | Extensions |
-|----------|-----------|
-| Raster images | `gif`, `jpg`, `jpeg`, `png`, `webp` |
+|----------|------------|
+| Raster images | `gif`, `ico`, `jpg`, `jpeg`, `png`, `webp` |
 | Vector / document | `svg`, `pdf`, `djvu` |
-| Audio | `ogg`, `oga`, `mp3`, `wav`, `flac`, `midi`, `mid` |
-| Video | `ogv`, `mp4`, `webm` |
-| 3D model | `stl` |
+| Audio | `ogg` |
 
 ## Global Shared Containers
 
@@ -139,11 +137,11 @@ overrides this for private wikis by stripping zone URLs at runtime.
 
 ## Sitemaps
 
-Sitemaps are generated per-wiki and delivered via `sitemap.php`. The index
-file path follows the pattern:
+Sitemaps are generated per-wiki and delivered via `sitemap.php`. The script
+proxies the index file from the CDN, constructing the upstream URL as:
 
 ```
-sitemaps/{dbname}/sitemap-index-{dbname}.xml
+https://cdn.wikioasis.org/sitemaps/{dbname}/sitemap-index-{dbname}.xml
 ```
 
 Files are streamed from `$wmgUploadHostname` (`cdn.wikioasis.org`), meaning

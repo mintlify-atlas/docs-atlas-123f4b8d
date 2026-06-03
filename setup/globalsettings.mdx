@@ -1,7 +1,7 @@
 ---
 title: "GlobalSettings.php: Farm-Wide Settings and Extension Loading"
 sidebarTitle: "GlobalSettings"
-description: "Farm-wide config after SiteConfiguration resolves: hooks, global extensions, CentralAuth strict + SUL3, shared-domain overrides, and conditional extension loading."
+description: "GlobalSettings.php: farm-wide hooks, CentralAuth strict mode and SUL3, shared-domain overrides, closed-wiki lockdown, and conditional extension loading."
 ---
 
 `GlobalSettings.php` is included near the **end** of the `LocalSettings.php` include chain, after `ManageWikiSettings.php` has already applied the per-wiki configuration extracted from the database. This ordering is intentional: by the time `GlobalSettings.php` runs, the `$wi` object is fully initialised, `$cwPrivate` and `$cwClosed` flags are set, and `$wmgSharedDomainPathPrefix` reflects whether the current request is coming through the shared CentralAuth domain. GlobalSettings can therefore make real decisions rather than just set static values.
@@ -124,8 +124,8 @@ Optional extensions are loaded at runtime based on whether they are active for t
 
   | Model | Pattern | Remote Source |
   |---|---|---|
-  | `Map.JsonConfig` | `/*.map$/` | `https://commons.miraheze.org/w/api.php` |
-  | `Tabular.JsonConfig` | `/*.tab$/` | `https://commons.miraheze.org/w/api.php` |
+  | `Map.JsonConfig` | `/.\\.map$/` | `https://commons.miraheze.org/w/api.php` |
+  | `Tabular.JsonConfig` | `/.\\.tab$/` | `https://commons.miraheze.org/w/api.php` |
 
   Both models use `'isLocal' => false` (data is not stored locally) and fetch from Miraheze Commons as the remote repository. The interwiki prefix is `commons`, matching `wgJsonConfigInterwikiPrefix` set in `LocalSettings.php`.
 </Accordion>

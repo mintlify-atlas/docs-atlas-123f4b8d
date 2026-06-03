@@ -131,9 +131,9 @@ This mechanism allows platform administrators to temporarily or permanently disa
   - **Comments** ↔ **ProtectionIndicator** (mutual conflict)
   - **BlogPage** ↔ **SimpleBlogPage** (mutual conflict)
   - **CirrusSearch** ↔ **TitleKey** (mutual conflict)
-  - **SocialProfile** ↔ **UserProfileV2** (mutual conflict)
+  - **UserProfileV2** → **SocialProfile** (UserProfileV2 cannot be enabled when SocialProfile is active)
   - **Lingo** ↔ **Newsletter** (mutual conflict)
-  - **MyVariables** ↔ **ApprovedRevs** (mutual conflict)
+  - **MyVariables** → **ApprovedRevs** (MyVariables cannot be active alongside ApprovedRevs)
 </Warning>
 
 ## Enabling Extensions via Special:ManageWiki

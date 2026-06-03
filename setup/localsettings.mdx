@@ -1,7 +1,7 @@
 ---
 title: "LocalSettings.php: WikiOasis Farm Bootstrap Entry Point"
 sidebarTitle: "LocalSettings"
-description: "LocalSettings.php bootstrap deep-dive: load order, staging vs production detection, virtual-domain mappings, versioned paths, and $wgConf settings categories."
+description: "LocalSettings.php bootstrap: load order, staging vs production detection, virtual-domain mappings, versioned paths, and $wgConf settings categories."
 ---
 
 `LocalSettings.php` is the single file that MediaWiki loads first on every request across the WikiOasis farm. It does not simply hold static configuration — it is an **orchestration script** that validates the entry point, pulls in credentials, resolves which wiki is being served, builds the full `$wgConf->settings` tree for SiteConfiguration, and then includes every downstream config file in the correct order. Nothing in the farm works without understanding this file's structure and sequencing.
@@ -36,11 +36,14 @@ When MediaWiki bootstraps, `LocalSettings.php` runs a strict sequence of include
   <Step title="$wgConf->settings population">
     The large `$wgConf->settings +=` block registers per-wiki configuration for every extension and core MediaWiki setting. Values can be keyed by wiki DB name for per-wiki overrides.
   </Step>
-  <Step title="ManageWiki config files">
-    `ManageWikiExtensions.php`, `ManageWikiNamespaces.php`, and `ManageWikiSettings.php` apply the per-wiki extension list and namespace/settings configuration stored in the database by ManageWiki.
+  <Step title="ManageWikiExtensions.php">
+    `ManageWikiExtensions.php` is included immediately after the `$wgConf->settings` block. It defines the full registry of extensions and skins available for per-wiki selection through ManageWiki. After this, `MirahezeFunctions::getConfigGlobals()` resolves the current wiki's configuration from `SiteConfiguration`, and `$wi->loadExtensions()` activates the extensions the wiki has enabled.
+  </Step>
+  <Step title="ManageWikiNamespaces.php and ManageWikiSettings.php">
+    After `extract($globals)` applies the resolved per-wiki globals, `ManageWikiNamespaces.php` applies per-wiki namespace configuration and `ManageWikiSettings.php` applies per-wiki settings — both read from the database by ManageWiki.
   </Step>
   <Step title="Final includes">
-    `Database.php`, `GlobalCache.php`, `GlobalSettings.php`, and `LocalWiki.php` are included last. `GlobalSettings.php` registers farm-wide hooks and conditionally loads optional extensions. See each file's documentation for details.
+    `Database.php`, `GlobalCache.php`, `GlobalSettings.php`, and `LocalWiki.php` are included last in that order. `GlobalSettings.php` registers farm-wide hooks and conditionally loads optional extensions. See each file's documentation for details.
   </Step>
 </Steps>
 
@@ -279,7 +282,9 @@ The bulk of `LocalSettings.php` is a large `$wgConf->settings +=` block. Setting
 After `$wgConf->settings` is fully populated, `LocalSettings.php` includes the remaining configuration files in this order:
 
 ```
-ManageWikiExtensions.php   → registers all available extensions in ManageWiki
+ManageWikiExtensions.php   → defines the registry of available extensions and skins
+  [getConfigGlobals()]     → resolves per-wiki SiteConfiguration globals
+  [loadExtensions()]       → activates the wiki's enabled extensions
 ManageWikiNamespaces.php   → applies per-wiki namespace configuration
 ManageWikiSettings.php     → applies per-wiki settings from ManageWiki
 Database.php               → configures LBFactoryMulti and cluster routing

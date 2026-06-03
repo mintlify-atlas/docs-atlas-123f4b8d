@@ -1,17 +1,17 @@
 ---
 title: "PrivateSettings.php: Credentials and Secrets Reference"
 sidebarTitle: "Private Settings"
-description: "PrivateSettings.php: why it lives outside the repo, R2/S3 and OAuth key setup, and required variables with types — DB credentials, secret key, and Sentry DSN."
+description: "PrivateSettings.php: why it stays outside the repo, the R2/S3 and OAuth setup, and all required variables — DB credentials, secret key, and Sentry DSN."
 ---
 
-`PrivateSettings.php` is the first file included by `LocalSettings.php` — loaded via `require_once "$IP/config/PrivateSettings.php"` before any other configuration runs. It is **not part of the Git repository** and is deployed separately to `/srv/mediawiki/config/PrivateSettings.php` on each server. Its purpose is to hold every piece of information that would be dangerous to expose in version control: database passwords, secret keys, object-storage credentials, Sentry DSN, and OAuth private key paths. Without this file present on disk, the entire farm fails to start.
+`PrivateSettings.php` is the first file included by `LocalSettings.php` — loaded via `require_once "$IP/config/PrivateSettings.php"` before any other configuration runs. It is **not part of the Git repository** and is deployed separately to `/srv/mediawiki/config/PrivateSettings.php` on each server. Its purpose is to hold every piece of information that would be dangerous to expose in version control: database passwords, secret keys, object-storage credentials, and the Sentry DSN. Without this file present on disk, the entire farm fails to start.
 
 <Warning>
   **Never commit credentials to the repository.** `PrivateSettings.php` must remain outside of version control at all times. If any credential in this file is accidentally exposed, rotate it immediately: regenerate `$wgSecretKey`, change database passwords, roll R2 API keys, and revoke the OAuth private key.
 </Warning>
 
 <Note>
-  The OAuth **public** key (`OAuth.key.pub`) **is** committed to the repository at `/srv/mediawiki/config/OAuth.key.pub` and referenced by `$wgOAuth2PublicKey`. Only the private key (`OAuth.key`) is kept in `PrivateSettings.php` via `$wgOAuth2PrivateKey`. This is intentional — public keys are designed to be distributable.
+  The OAuth **public** key (`OAuth.key.pub`) **is** committed to the repository at `/srv/mediawiki/config/OAuth.key.pub`. Both `$wgOAuth2PublicKey` and `$wgOAuth2PrivateKey` are set in `LocalSettings.php` (in `$wgConf->settings`) pointing to those paths — only the key **files** themselves live outside version control. Public keys are designed to be distributable; private keys must never be committed.
 </Note>
 
 ## Required Variables
@@ -150,21 +150,14 @@ With the URL unset, MediaWiki falls back to serving files through `img_auth.php`
     ```
     The DSN is available in your Sentry project's settings under **Client Keys (DSN)**.
   </Step>
-  <Step title="Set OAuth key paths">
-    The OAuth private key path is configured here; the public key path is already set in `LocalSettings.php`:
-    ```php
-    // In PrivateSettings.php — private key only
-    // $wgOAuth2PrivateKey is set in LocalSettings.php to:
-    //   /srv/mediawiki/config/OAuth.key
-    // Ensure that file exists and is readable by the web user.
-    ```
-    Generate an RSA key pair if one does not exist:
+  <Step title="Generate OAuth key files">
+    Both `$wgOAuth2PrivateKey` and `$wgOAuth2PublicKey` are already set in `LocalSettings.php` (in `$wgConf->settings`) to `/srv/mediawiki/config/OAuth.key` and `/srv/mediawiki/config/OAuth.key.pub` respectively. You only need to ensure those key **files** exist on disk. Generate an RSA key pair if one does not exist:
     ```bash
     openssl genrsa -out /srv/mediawiki/config/OAuth.key 2048
     openssl rsa -in /srv/mediawiki/config/OAuth.key \
         -pubout -out /srv/mediawiki/config/OAuth.key.pub
     ```
-    Commit `OAuth.key.pub` to the repository. Keep `OAuth.key` on disk only.
+    Commit `OAuth.key.pub` to the repository. Keep `OAuth.key` on disk only and never add it to version control.
   </Step>
   <Step title="Set global Discord webhook (optional)">
     If Discord notifications are used, add the global webhook URL:

@@ -82,7 +82,7 @@ The farm is divided into two distinct realms that share code but are completely 
 </Accordion>
 
 <Accordion title="MEDIAWIKI_VERSIONS">
-  The three named MediaWiki release tracks the farm supports. Individual wikis can be pinned to a specific track via `Special:ManageWiki/core` or via `wikiVersions.php`. The `stable` track is the default for production wikis; `beta` is the default on the staging server; `alpha` allows opt-in testing of the next unreleased branch.
+  The three named MediaWiki release tracks the farm supports. Individual wikis can be pinned to a specific track via `Special:ManageWiki/core`; submitting that form calls `WikiFarmMultiVersion::setWikiVersion()`, which atomically updates `wikiVersions.php` as a fast-path override that takes effect before the next full cache rebuild. The `stable` track is the default for production wikis; `beta` is the default on the staging server; `alpha` allows opt-in testing of the next unreleased branch.
 
   ```php
   public const MEDIAWIKI_VERSIONS = [

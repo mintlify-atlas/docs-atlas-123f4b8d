@@ -1,10 +1,10 @@
 ---
 title: "Understanding Wiki Lifecycle States on WikiOasis Farm"
 sidebarTitle: "Wiki States"
-description: "Understand the five wiki lifecycle states on WikiOasis — inactive, closed, removed, and deleted — with durations, behaviors, and HTTP responses."
+description: "Five wiki lifecycle states on WikiOasis — active, inactive, closed, removed, and deleted — with their durations, behaviors, and HTTP responses."
 ---
 
-Every wiki on WikiOasis passes through a defined lifecycle governed by the CreateWiki extension and enforced by `MirahezeFunctions` at request time. State information is stored in the `cw_wikis` database table, propagated into the per-wiki binary cache under `cw_cache/{dbname}.php`, and exposed as boolean globals (`$cwClosed`, `$cwDeleted`, `$cwInactive`, etc.) that LocalSettings.php and GlobalSettings.php use to apply the correct permission restrictions. Understanding these states is essential for wiki administrators, stewards, and anyone operating on the farm — a wiki that has been closed for 30 days or removed for 245 days will automatically advance to the next state unless action is taken.
+Every wiki on WikiOasis passes through a defined lifecycle governed by the CreateWiki extension and enforced by `MirahezeFunctions` at request time. State information is stored in the `cw_wikis` database table, propagated into the per-wiki PHP cache under `cw_cache/{dbname}.php`, and exposed as boolean globals (`$cwClosed`, `$cwDeleted`, `$cwInactive`, etc.) that LocalSettings.php and GlobalSettings.php use to apply the correct permission restrictions. Understanding these states is essential for wiki administrators, stewards, and anyone operating on the farm — a wiki that has been closed for 30 days or removed for 245 days will automatically advance to the next state unless action is taken.
 
 ## State Durations
 
@@ -31,7 +31,7 @@ A wiki is **active** when it has received at least one edit within the last 90 d
 
 A wiki becomes **inactive** after 90 consecutive days without any recorded edits. The `cwInactive` global is set to `true` (or `'exempt'` if the wiki has an approved inactivity exemption). Inactive wikis are still publicly readable and writable — inactivity is a signal, not a restriction. Stewards will contact the wiki's bureaucrats before advancing the state further.
 
-Exemption reasons available to stewards include: *Wiki completed and made to be read*, *Wiki made for time-based gathering*, *Wiki made to be read*, *Temporary exemption for exceptional hardship*, and *Other, see DPE*.
+Exemption reasons available to stewards include: *Wiki completed and made to be read*, *Wiki made for time-based gathering*, *Wiki made to be read*, *Temporary exemption for exceptional hardship, see DPE*, and *Other, see DPE*.
 
 ### Closed
 
@@ -84,7 +84,7 @@ if (preg_match('/(^|\.)skywiki\.org$/', $host)) {
 
 ## State Flow Diagram
 
-```
+```text
 Active ──(90 days no edits)──▶ Inactive
                                     │
                           (steward closes)

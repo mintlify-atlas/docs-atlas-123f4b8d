@@ -66,7 +66,7 @@ The eight sections are: **api**, **editors**, **mediahandlers**, **parserhooks**
   | **Calendar** | — | Adds a Wikivoyage-style calendar tag for rendering monthly calendars. |
   | **Cargo** | — | Powerful structured data storage for wikis. Requires `managewiki-restricted`. Limited to wikis with fewer than 50,000 pages. |
   | **CategoryTree** | — | Adds an expandable tree view of category hierarchies using the `<categorytree>` tag. |
-  | **CategoryTests** | — | Adds parser functions to test whether a page is in a given category. |
+  | **Category Tests** | — | Adds parser functions to test whether a page is in a given category. |
   | **CharInsert** | — | Adds a character insertion toolbar for inserting special characters in the editor. |
   | **Cite** | — | Core footnote and citation extension using `<ref>` and `<references/>` tags. |
   | **Comments** | protectionindicator | Adds a `<comments/>` tag for threaded on-page comment sections with SQL tables. |
@@ -167,7 +167,7 @@ The eight sections are: **api**, **editors**, **mediahandlers**, **parserhooks**
 
   | Extension | Conflicts | Description |
   |---|---|---|
-  | **Approved Revs** | myvariables | Designates specific revisions of pages as the approved version, showing approved content to readers while editors see the latest draft. Requires SQL tables and grants `approverevisions` permission to sysops. |
+  | **Approved Revs** | — | Designates specific revisions of pages as the approved version, showing approved content to readers while editors see the latest draft. Requires SQL tables and grants `approverevisions` permission to sysops. |
   | **AuthorProtect** | lockauthor | Allows page authors to protect their own pages from editing by other users. Grants `author` permission to sysops and `authorprotect` to users. Conflicts with LockAuthor. |
   | **LockAuthor** | authorprotect | Locks pages so only the original author can edit them. Grants `editall` to sysops. Conflicts with AuthorProtect. |
   | **Moderation** | — | Intercepts all edits from non-automoderated users and queues them for moderator review before publication. Creates `moderation` SQL table. Adds `automoderated`, `moderator` groups. |
@@ -188,7 +188,6 @@ The eight sections are: **api**, **editors**, **mediahandlers**, **parserhooks**
   | **Data Transfer** | — | Adds Special:ImportCSV and Special:ExportCSV for tabular data import/export. Requires `datatransferimport` permission. |
   | **EditCount** | — | Adds a Special:Editcount page showing edit counts per user and namespace. |
   | **EnhancedUpload** | visualeditor | Enhanced upload interface integrated with VisualEditor. Requires VisualEditor. |
-  | **FeaturedFeeds** | — | Adds Atom/RSS feeds of featured content. Configuration requires a platform pull request. |
   | **FlaggedRevs** | — | Full revision flagging and review system with editor/reviewer user groups, pending changes, and moderation. Requires SQL tables and multiple permission grants. |
   | **GoogleNewsSitemap** | — | Adds a Special:GoogleNewsSitemap page generating a news-format sitemap for Google News. |
   | **Linter** | — | Adds a Special:LintErrors page listing HTML linting issues in wikitext. Requires SQL table. |
@@ -288,6 +287,7 @@ The eight sections are: **api**, **editors**, **mediahandlers**, **parserhooks**
   | **DynamicSidebar** | — | Allows configuring the sidebar navigation per-user-group or per-page. |
   | **EditSubpages** | — | Adds a batch-edit interface for a page's subpages. |
   | **External Data** | — | Fetches and renders data from external URLs, databases, and APIs. Requires `managewiki-restricted`. |
+  | **FeaturedFeeds** | — | Adds Atom/RSS feeds of featured content. Configuration of `$wgFeaturedFeeds` requires a platform pull request; not configurable in ManageWiki. |
   | **Flex Diagrams** | — | Adds BPMN, Gantt, Mermaid, and Draw.io diagram namespaces and rendering. |
   | **ForcePreview** | — | Requires users to preview edits before saving them. |
   | **FontAwesome** | — | Makes Font Awesome icon fonts available in wiki pages. |
@@ -336,7 +336,7 @@ The eight sections are: **api**, **editors**, **mediahandlers**, **parserhooks**
   | **Share** | — | Adds social sharing buttons to pages. Grants `viewsharelinks` permission. |
   | **SimpleBlogPage** | — | Adds a simple User_blog namespace. Conflicts with BlogPage. |
   | **SoftRedirector** | — | Adds soft redirect functionality for cross-wiki links. |
-  | **SocialProfile** | — | Full social networking suite with user profiles, gifts, relationships, boards, and stats. Conflicts with UserProfileV2. |
+  | **SocialProfile** | — | Full social networking suite with user profiles, gifts, relationships, boards, and stats. Cannot be active simultaneously with UserProfileV2 (conflict declared on UserProfileV2 side). |
   | **StandardDialogs** | — | Adds OOJS/UI standard dialog components. Automatically loads OOJSPlus. |
   | **StructuredNavigation** | — | Adds a Navigation namespace for structured sidebar navigation menus. |
   | **TemplateWizard** | templatedata | Adds a TemplateWizard dialog to the WikiEditor toolbar. Requires TemplateData. |
@@ -348,7 +348,7 @@ The eight sections are: **api**, **editors**, **mediahandlers**, **parserhooks**
   | **UnlinkedWikibase** | — | Enables Wikibase-like structured data without linking to an external Wikibase. Requires `managewiki-restricted`. |
   | **UploadsLink** | — | Adds a link to a user's uploaded files in their profile. |
   | **UserPageEditProtection** | — | Restricts editing of user pages to the owning user and sysops. |
-  | **UserProfileV2** | — | Modern user profile system. Requires `managewiki-restricted`. Conflicts with SocialProfile. Uses Amazon S3 for image storage. |
+  | **UserProfileV2** | — | Modern user profile system. Conflicts with SocialProfile. Uses Amazon S3 for image storage and serves profile images via the WikiOasis CDN. |
   | **Variables** | — | Adds `#vardefine` and `#var` parser functions for in-page variable storage. |
   | **VariablesLua** | variables | Exposes the Variables extension values to Lua/Scribunto modules. Requires Variables. |
   | **VEForAll** | pageforms, visualeditor | Embeds VisualEditor in Page Forms fields. Requires PageForms and VisualEditor. |

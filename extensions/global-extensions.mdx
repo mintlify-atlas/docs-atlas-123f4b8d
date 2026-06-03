@@ -155,6 +155,9 @@ Several extensions in `GlobalSettings.php` are only loaded when specific conditi
   <Card title="OOJSPlus (StandardDialogs/EnhancedUpload)" icon="window-restore">
     OOJSPlus is loaded automatically when either **StandardDialogs** or **EnhancedUpload** is active, providing the OOJS/UI component library those extensions depend on.
   </Card>
+  <Card title="PortableInfobox (Parsoid compatibility)" icon="table-columns">
+    When **PortableInfobox** is active, both `$wgParserMigrationEnableParsoidDiscussionTools` and `$wgParserMigrationEnableParsoidArticlePages` are set to `false` due to incompatibility with Parsoid rendering.
+  </Card>
 </CardGroup>
 
 ## Per-Wiki Special Cases

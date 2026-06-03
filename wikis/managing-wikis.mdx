@@ -40,7 +40,7 @@ All five modules are enabled via `wgManageWikiModulesEnabled` in `LocalSettings.
 public static function getManageWikiConfigCache(): array
 ```
 
-Reads the per-wiki binary cache from `cw_cache/{dbname}.php` and expands it into a full `$wgConf->settings`-compatible array. It processes:
+Reads the per-wiki PHP cache from `cw_cache/{dbname}.php` and expands it into a full `$wgConf->settings`-compatible array. It processes:
 
 - **Core settings** — e.g. `wgLanguageCode` from `$cacheArray['core']`
 - **States** — maps `cwPrivate`, `cwClosed`, `cwLocked`, `cwDeleted`, `cwInactive`, `cwExperimental` booleans from `$cacheArray['states']`
