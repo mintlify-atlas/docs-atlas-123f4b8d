@@ -1,0 +1,364 @@
+---
+title: "ManageWiki Extension Sections: Complete Reference Guide"
+sidebarTitle: "Extension Sections"
+description: "A full breakdown of the eight ManageWiki extension sections — api, editors, mediahandlers, parserhooks, antispam, specialpages, skins, and other."
+---
+
+The ManageWiki extension registry groups every available extension into one of eight named sections. These sections correspond directly to the tab- or group-based layout displayed on **Special:ManageWiki/extensions**, helping wiki administrators quickly find the type of extension they are looking for without scrolling through the full list. The `section` key on each extension entry in `$wgManageWikiExtensions` determines which group it appears under. Understanding how sections are organised is useful both for wiki administrators choosing extensions and for platform administrators adding new extensions to the registry.
+
+<Note>
+  The **skins** section in ManageWiki controls which additional skins wiki
+  administrators can enable for their wiki. This is separate from the six
+  globally loaded skins (Citizen, CologneBlue, Modern, MonoBook, Timeless,
+  Vector) which are always available farm-wide regardless of ManageWiki
+  configuration.
+</Note>
+
+## How Sections Appear in the UI
+
+When a wiki administrator visits Special:ManageWiki/extensions, extensions are presented in their section groups. Administrators can browse each section independently, and the section label provides helpful context about the type of functionality offered. All eight sections are always shown; sections with many extensions may be presented in a scrollable list or with search/filter support depending on the ManageWiki version deployed.
+
+The eight sections are: **api**, **editors**, **mediahandlers**, **parserhooks**, **antispam**, **specialpages**, **skins**, and **other**.
+
+---
+
+<Accordion title="API — Extensions that expose or enhance the MediaWiki API">
+  Extensions in the `api` section add data endpoints or enhance metadata available through the MediaWiki Action API. These are typically invisible to end users but power features like search suggestions, page previews, and third-party integrations.
+
+  | Extension | Description |
+  |---|---|
+  | **PageImages** | Adds a `pageimages` API module that returns the best representative image for a given page. Used by Popups and other extensions for page previews. |
+  | **ShortDescription** | Adds support for short, plain-text page descriptions (as seen on Wikipedia), exposed via the API and used by search and preview features. |
+</Accordion>
+
+<Accordion title="Editors — Enhanced wikitext and visual editing interfaces">
+  The `editors` section contains extensions that provide or enhance the editing experience beyond MediaWiki's default plain-text editor.
+
+  | Extension | Description |
+  |---|---|
+  | **CodeEditor** | Adds syntax highlighting and code-aware editing to MediaWiki's wikitext editor when editing CSS, JavaScript, Lua, and other code pages. Works alongside WikiEditor. |
+  | **CodeMirror** | Integrates the CodeMirror 6 editor, providing a modern in-browser editor with syntax highlighting, bracket matching, and code folding for wikitext and code pages. |
+  | **VisualEditor** | Provides a rich WYSIWYG visual editing interface powered by Parsoid/Parsoid HTML. The foundation for many other extensions including DiscussionTools, EnhancedUpload, and Citoid. |
+</Accordion>
+
+<Accordion title="Media Handlers — File upload, processing, and display extensions">
+  Extensions in the `mediahandlers` section extend MediaWiki's media handling capabilities, adding support for new file formats or improved upload workflows.
+
+  | Extension | Requires | Description |
+  |---|---|---|
+  | **EmbedVideo** | — | Allows embedding video content from external services (YouTube, Vimeo, etc.) using simple parser tags. |
+  | **PagedTiffHandler** | — | Adds support for multi-page TIFF files, rendering individual pages as images and allowing page navigation. |
+  | **MediaSpoiler** | — | Adds a spoiler overlay to media files, requiring users to click to reveal the image or video. |
+  | **PDF Handler** | — | Renders PDF files as page images within wiki pages, with page navigation. |
+  | **SimpleBatchUpload** | — | Provides a simplified drag-and-drop multi-file upload interface for batch file uploads. |
+  | **TimedMediaHandler** | — | Full-featured audio and video handler with transcoding support. Creates a `transcode` database table. Grants `transcode-reset` and `transcode-status` permissions to sysops and autoconfirmed users. |
+  | **UploadWizard** | — | Multi-step guided upload interface. Creates the `Campaign` namespace (ID 460/461) and `uw_campaigns` SQL table. Adds `mass-upload` and `upwizcampaigns` permissions, and an `upwizcampeditors` user group. |
+</Accordion>
+
+<Accordion title="Parser Hooks — Template functions, content rendering, and page display extensions">
+  The `parserhooks` section is the largest section, containing extensions that add new parser functions, tag hooks, or content rendering capabilities to wikitext. These form the core of most wikis' content authoring toolkit.
+
+  | Extension | Conflicts | Description |
+  |---|---|---|
+  | **AJAX Poll** | — | Adds an `<poll>` tag for creating interactive polls on wiki pages. |
+  | **Arrays** | — | Adds parser functions for working with arrays in wikitext templates. |
+  | **Babel** | — | Adds the `{{#babel:}}` template for displaying language proficiency on user pages. |
+  | **Calendar** | — | Adds a Wikivoyage-style calendar tag for rendering monthly calendars. |
+  | **Cargo** | — | Powerful structured data storage for wikis. Requires `managewiki-restricted`. Limited to wikis with fewer than 50,000 pages. |
+  | **CategoryTree** | — | Adds an expandable tree view of category hierarchies using the `<categorytree>` tag. |
+  | **CategoryTests** | — | Adds parser functions to test whether a page is in a given category. |
+  | **CharInsert** | — | Adds a character insertion toolbar for inserting special characters in the editor. |
+  | **Cite** | — | Core footnote and citation extension using `<ref>` and `<references/>` tags. |
+  | **Comments** | protectionindicator | Adds a `<comments/>` tag for threaded on-page comment sections with SQL tables. |
+  | **CommentStreams** | moderation | Adds a structured comment streams system with voting and moderation. |
+  | **CountDownClock** | — | Adds a `<countdown>` tag displaying a countdown timer to a target date. |
+  | **Create Page** | — | Adds a simple form-based page creation interface. |
+  | **CSS** | — | Allows embedding CSS stylesheets stored as wiki pages into other pages. |
+  | **CustomSubtitle** | — | Allows setting a custom subtitle for individual wiki pages. |
+  | **DisplayTitle** | — | Overrides the displayed page title without changing the actual title. |
+  | **DPLForum** | — | Adds a lightweight forum view using Dynamic Page List queries. |
+  | **Drafts** | — | Adds auto-save draft functionality for editors. Requires SQL table. |
+  | **DummyFandoomMainpageTags** | — | Stub tags for compatibility with Fandom-style main page layouts. |
+  | **DynamicPageList** | dynamicpagelist3 | Wikimedia-style DPL for listing pages matching criteria. Conflicts with DPL3. |
+  | **DynamicPageList3** | dynamicpagelist | Extended DPL with additional list-building features. Conflicts with DPL (Wikimedia). |
+  | **EasyTimeline** | — | Renders graphical timelines using the EasyTimeline syntax. |
+  | **EmbedSpotify** | — | Adds a tag for embedding Spotify players on wiki pages. |
+  | **Genealogy** | — | Adds genealogy tree rendering tags for family history wikis. |
+  | **GeoCrumbs** | — | Adds geographic breadcrumb navigation for location-based wikis. |
+  | **GeoGebra** | — | Embeds interactive GeoGebra mathematical applets in pages. |
+  | **GoogleDocs4MW** | — | Embeds Google Docs, Sheets, and Slides documents in wiki pages. |
+  | **GoogleForms** | — | Embeds Google Forms in wiki pages via an iframe tag. |
+  | **GroupsSidebar** | — | Displays user group membership in the page sidebar. |
+  | **Header Tabs** | — | Adds tabbed section navigation to wiki pages using headers. |
+  | **ImageMap** | — | Adds clickable image maps using HTML-style area definitions. |
+  | **InputBox** | — | Adds form input boxes for search, page creation, and other actions. |
+  | **Javascript Slideshow** | — | Adds a JavaScript-powered image slideshow tag. |
+  | **Josa** | — | Korean-language grammar particle helper for Korean-language wikis. |
+  | **JsCalendar** | — | Adds a full JavaScript calendar widget tag. |
+  | **Kartographer** | jsonconfig | Adds interactive Leaflet maps using `<mapframe>` and `<maplink>` tags. Requires JsonConfig. |
+  | **LabeledSectionTransclusion** | — | Adds `#lst` and `#lstx` parser functions for transclusion of labelled page sections. |
+  | **Lingo** | newsletter | Adds hover tooltip definitions from a glossary page. Conflicts with Newsletter. |
+  | **LinkCards** | — | Renders page links as visual cards with preview information. |
+  | **LinkTitles** | — | Auto-links first occurrences of defined terms. Requires `managewiki-restricted`. |
+  | **LogoFunctions** | — | Adds parser functions for displaying wiki logos in templates. |
+  | **Loops** | — | Adds `#loop` and `#while` parser functions for iteration in templates. |
+  | **MagicNoCache** | — | Adds `__NOCACHE__` magic word to prevent page caching. |
+  | **Maps** | — | Interactive mapping extension supporting multiple map providers. Creates GeoJson namespaces (IDs 420/421). |
+  | **Math** | — | Renders LaTeX mathematical notation using the `<math>` tag. |
+  | **Mermaid** | — | Renders Mermaid.js diagrams (flowcharts, sequence diagrams, etc.) from code blocks. |
+  | **MintyDocs** | — | Documentation management extension for structured document wikis. |
+  | **MsCalendar** | — | Adds a full-featured calendar with event management. Requires SQL table. |
+  | **MsCatSelect** | — | Adds a category selector dropdown to the edit interface. |
+  | **MsLinks** | — | Enhances wiki links with additional display options. |
+  | **MsUpload** | — | Adds drag-and-drop inline file upload to the wikitext editor. |
+  | **MyVariables** | approvedrevs | Adds additional magic variables for user, page, and date information. |
+  | **NamespacePreload** | — | Automatically preloads template content when creating pages in certain namespaces. |
+  | **Network** | — | Renders network/graph diagrams from wikitext definitions. |
+  | **NoTitle** | — | Hides the page title heading using `__NOTITLE__` magic word. |
+  | **OpenGraphMeta** | — | Adds Open Graph metadata tags to pages for social media link previews. |
+  | **OreDict** | — | Ore dictionary for game wikis; maps item names across mods. Requires SQL table. |
+  | **PDF Embed** | — | Embeds PDF files inline in pages using a `<pdf>` tag. Requires `embed_pdf` permission. |
+  | **Phonos** | — | Adds inline audio playback for phonetic pronunciation guides. |
+  | **Pipe Escape** | — | Adds a `{{!}}` template equivalent as a built-in parser function. |
+  | **Poem** | — | Adds a `<poem>` tag for formatting poetry with preserved line breaks. |
+  | **Portable Infobox** | — | Fandom-compatible infobox rendering for wikis migrating from Fandom. |
+  | **Preloader** | — | Pre-fills the edit box with template content when creating new pages. |
+  | **Quiz** | — | Adds interactive quiz tags for creating self-assessment quizzes. |
+  | **RandomImage** | — | Displays a random image from a specified category using a parser tag. |
+  | **RandomSelection** | — | Randomly selects and displays one item from a list in a template. |
+  | **RightFunctions** | — | Adds parser functions for checking user rights and group membership. |
+  | **RobloxAPI** | — | Embeds Roblox game/asset data in wiki pages via the Roblox API. |
+  | **RSS feed** | — | Embeds RSS/Atom feed content in wiki pages. |
+  | **SaneCase** | — | Normalises page title casing for more flexible link handling. |
+  | **Score** | — | Renders music notation from LilyPond source using the `<score>` tag. |
+  | **ScratchBlocks4** | — | Renders Scratch programming block syntax as visual block diagrams. |
+  | **Screenplay** | — | Adds screenplay-format markup rendering for script wikis. |
+  | **SimpleTooltip** | — | Adds a `{{#tip-text:}}` parser function for hover tooltips. |
+  | **Skin per page** | — | Allows specifying a different skin for individual pages. |
+  | **Snapblocks** | — | Renders Snap! programming block syntax as visual diagrams. |
+  | **Snap! Project Embed** | — | Embeds Snap! programming projects in wiki pages. |
+  | **Spoilers** | — | Adds a `<spoiler>` tag that hides content behind a click-to-reveal toggle. |
+  | **SubPageFun** | — | Adds parser functions for manipulating subpage paths and names. |
+  | **SubPageList3** | — | Lists subpages of a page using a configurable parser tag. |
+  | **SyntaxHighlight** | — | Syntax highlighting for code blocks using `<syntaxhighlight>`. Requires Pygments. |
+  | **TabberNeue** | — | Modern tabbed content extension using a clean `<tabber>` syntax. |
+  | **Tabs** | — | Adds tabbed content sections using a `<tabs>` tag. |
+  | **TemplateData** | — | Adds structured template documentation used by VisualEditor and TemplateWizard. |
+  | **TemplateStyles** | — | Allows per-template CSS stylesheets stored as wiki subpages. |
+  | **TemplateStylesExtender** | templatestyles | Extends TemplateStyles with additional CSS features. Requires TemplateStyles. |
+  | **Tilesheets** | oredict | Renders sprite-sheet-based item icons for game wikis. Requires OreDict. |
+  | **TimezoneConverter** | — | Adds a parser function to display times in the reader's local timezone. |
+  | **TocTree** | — | Alternative table-of-contents rendering in a sidebar tree format. |
+  | **TreeAndMenu** | — | Renders collapsible tree and menu structures in pages. |
+  | **Title Icon** | — | Adds a small icon next to page titles using a parser function. |
+  | **Twitter Tag** | — | Embeds tweets and Twitter timelines using a `<twitter>` tag. |
+  | **UrlGetParameters** | — | Exposes URL query parameters as parser variables for dynamic pages. |
+  | **UserFunctions** | — | Adds parser functions for user-specific conditional content. |
+  | **UserWelcome** | socialprofile | Displays a welcome widget on user pages. Requires SocialProfile. |
+  | **VoteNY** | — | Adds a thumbs-up/down voting widget to pages. Requires SQL table. |
+  | **WikiCategoryTagCloud** | — | Renders category members as a weighted tag cloud. |
+  | **WikiHiero** | — | Renders Ancient Egyptian hieroglyphics using the `<hiero>` tag. |
+  | **WikiSEO** | — | Adds structured SEO metadata and social preview tags to pages. |
+  | **WikiText Logged In Out** | — | Allows showing different wikitext content to logged-in vs. logged-out users. |
+</Accordion>
+
+<Accordion title="Anti-Spam — Content moderation and edit control extensions">
+  The `antispam` section contains extensions focused on controlling who can edit pages and reviewing or approving edits before they become visible.
+
+  | Extension | Conflicts | Description |
+  |---|---|---|
+  | **Approved Revs** | myvariables | Designates specific revisions of pages as the approved version, showing approved content to readers while editors see the latest draft. Requires SQL tables and grants `approverevisions` permission to sysops. |
+  | **AuthorProtect** | lockauthor | Allows page authors to protect their own pages from editing by other users. Grants `author` permission to sysops and `authorprotect` to users. Conflicts with LockAuthor. |
+  | **LockAuthor** | authorprotect | Locks pages so only the original author can edit them. Grants `editall` to sysops. Conflicts with AuthorProtect. |
+  | **Moderation** | — | Intercepts all edits from non-automoderated users and queues them for moderator review before publication. Creates `moderation` SQL table. Adds `automoderated`, `moderator` groups. |
+</Accordion>
+
+<Accordion title="Special Pages — Extensions adding administrative and utility special pages">
+  Extensions in the `specialpages` section primarily add new `Special:` pages or significantly enhance existing ones, providing administrative tools and utility features.
+
+  | Extension | Requires | Description |
+  |---|---|---|
+  | **Admin Links** | — | Adds a Special:AdminLinks page with a curated list of administrative page links. |
+  | **CiteThisPage** | — | Adds a Special:CiteThisPage page for generating formatted citations for wiki pages. |
+  | **ContactPage** | — | Adds a Special:Contact page providing a contact form that emails site administrators. |
+  | **ContributionScores** | — | Adds a Special:ContributionScores page ranking users by edit activity. |
+  | **CreatedPagesList** | — | Adds a Special:CreatedPagesList page listing pages created by each user. Requires SQL table. |
+  | **CreatePageUw** | — | Adds a Special:CreatePageUw guided page creation form. |
+  | **CreateRedirect** | — | Adds a Special:CreateRedirect page for creating redirect pages. |
+  | **Data Transfer** | — | Adds Special:ImportCSV and Special:ExportCSV for tabular data import/export. Requires `datatransferimport` permission. |
+  | **EditCount** | — | Adds a Special:Editcount page showing edit counts per user and namespace. |
+  | **EnhancedUpload** | visualeditor | Enhanced upload interface integrated with VisualEditor. Requires VisualEditor. |
+  | **FeaturedFeeds** | — | Adds Atom/RSS feeds of featured content. Configuration requires a platform pull request. |
+  | **FlaggedRevs** | — | Full revision flagging and review system with editor/reviewer user groups, pending changes, and moderation. Requires SQL tables and multiple permission grants. |
+  | **GoogleNewsSitemap** | — | Adds a Special:GoogleNewsSitemap page generating a news-format sitemap for Google News. |
+  | **Linter** | — | Adds a Special:LintErrors page listing HTML linting issues in wikitext. Requires SQL table. |
+  | **MassEditRegex** | — | Adds a Special:MassEditRegex page for bulk regex-based page editing. Requires `masseditregex` permission. |
+  | **MassMessage** | — | Adds a Special:MassMessage page for sending messages to lists of users. Requires `massmessage` permission. |
+  | **MediaWikiChat** | — | Adds a real-time on-wiki chat page. Requires SQL tables and chat permission groups. |
+  | **NearbyPages** | — | Adds a Special:NearbyPages page showing geo-tagged pages near a location. |
+  | **Newest Pages** | — | Adds a Special:NewestPages page listing recently created pages. |
+  | **NukeDPL** | dynamicpagelist or dynamicpagelist3 | Adds a bulk-delete tool using DPL queries. Requires DynamicPageList or DPL3. |
+  | **PageForms** | — | Adds form-based page editing via the Form namespace (IDs 106/107). Comprehensive structured data entry system. |
+  | **Page Schemas** | — | Adds a Special:GeneratePages page for generating pages from XML schemas. |
+  | **PageTriage** | — | Adds a Special:NewPagesFeed page for reviewing new pages and tagging them. Requires SQL table. |
+  | **Protect Site** | — | Adds a Special:ProtectSite page allowing bureaucrats to temporarily lock the entire wiki. |
+  | **RefreshSpecial** | — | Adds a Special:RefreshSpecial page for purging special page caches. Requires `managewiki-restricted`. |
+  | **Replace Text** | — | Adds a Special:ReplaceText page for sitewide search-and-replace. Requires `managewiki-restricted`. |
+  | **Report** | — | Adds a Special:Report page for users to report abusive content. Requires SQL table. |
+  | **SimpleChanges** | — | Adds a simplified, clean recent changes view. |
+  | **SpeciallyCursed** | — | Adds unusual special page utilities for unusual wikis. |
+  | **TemplateSandbox** | — | Adds a Special:TemplateSandbox page for testing template changes before publishing. |
+  | **TimeMachine** | — | Adds a Special:TimeMachine page for browsing the wiki as it appeared at a past date. |
+  | **Translate** | universallanguageselector | Full page translation system with translation namespaces, workflows, and statistics. Requires UniversalLanguageSelector and multiple SQL tables. |
+  | **TranslationNotifications** | massmessage, translate | Adds notifications to translators when new content needs translation. Requires MassMessage and Translate. |
+  | **UnusedRedirects** | — | Adds a Special:UnusedRedirects page listing redirects that are not linked from anywhere. |
+  | **UrlShortener** | — | Adds a Special:UrlShortener page for generating short URLs. Requires `urlshortener-create-url` permission. |
+  | **WebChat** | — | Embeds a web-based IRC or chat client in a special page. |
+</Accordion>
+
+<Accordion title="Skins — Additional per-wiki skin choices">
+  The `skins` section lists additional skins that wiki administrators can enable for their wiki beyond the six globally loaded skins. Enabling a skin from this section makes it selectable by users on that wiki as their preferred skin.
+
+  <Note>
+    Skins in this section are in addition to the six globally loaded skins
+    (Citizen, CologneBlue, Modern, MonoBook, Timeless, Vector). Enabling a skin
+    here makes it available for selection on that specific wiki.
+  </Note>
+
+  | Skin | Description |
+  |---|---|
+  | **Anisa** | A clean, modern wiki skin. |
+  | **Apex** | A wide-layout skin with a prominent header. |
+  | **BlueSky** | A light blue-themed skin with a modern feel. |
+  | **Chameleon** | A Bootstrap-based fully customisable skin. Automatically loads the Bootstrap extension when active. |
+  | **Cosmos** | A Fandom-inspired skin with sidebar navigation and wide-page layout. |
+  | **Dusk To Dawn** | A dark-mode-first skin with a twilight colour palette. |
+  | **Erudite** | A clean, academic-oriented skin emphasising readability. |
+  | **Evelution** | A modern skin with a focus on community wiki aesthetics. |
+  | **Eveskin** | A minimalist skin with a light, airy design. |
+  | **Femiwiki** | A skin developed for and inspired by Femiwiki. |
+  | **Foreground** | A responsive, Foundation-based skin. |
+  | **Gamepress** | A game-wiki-oriented skin with dark tones. |
+  | **HasSomeColours** | A colourful skin with customisable colour schemes. |
+  | **Mask** | A dark-themed skin with a masked/overlay aesthetic. |
+  | **Medik** | A clean, medical/professional wiki skin. |
+  | **Metrolook** | A Metro UI–inspired flat design skin. |
+  | **MinervaNeue** | MediaWiki's mobile-first skin, also suitable for desktop. Required by MobileFrontend. |
+  | **Mirage** | A visually rich skin with prominent banners. |
+  | **Monaco** | A skin inspired by the classic Wikia/Fandom Monaco skin. |
+  | **Nimbus** | A light, cloud-inspired modern skin. |
+  | **Nostalgia** | A faithful recreation of Wikipedia's early-2000s look. |
+  | **Pivot** | A responsive skin with Bootstrap-based layout. |
+  | **Refreshed** | A modern refreshed skin with a clean sidebar. |
+  | **Snap! Wiki Skin** | A skin themed for Snap! programming language wikis. |
+  | **Splash** | A full-width landing-page-style skin. |
+  | **Truglass** | A frosted glass aesthetic skin. |
+  | **Tweeki** | A Twitter Bootstrap-based skin with extensive customisation options. |
+  | **WMAU** | A skin developed for the Wikimedia Australia chapter. |
+</Accordion>
+
+<Accordion title="Other — Miscellaneous extensions that span multiple categories">
+  The `other` section is a catch-all for extensions that provide cross-cutting functionality not cleanly fitting into the other seven sections. This includes social features, Wikibase integration, analytics, navigation, and user experience extensions.
+
+  | Extension | Requires | Description |
+  |---|---|---|
+  | **AdvancedSearch** | cirrussearch | Adds an advanced search form with structured query fields. Requires CirrusSearch. |
+  | **ArticleCreationWorkflow** | — | Adds a guided article creation workflow with talk-page-first prompts. |
+  | **ArticlePlaceholder** | wikibaseclient | Generates stub article pages from Wikibase data. Requires WikibaseClient. |
+  | **ArticleRatings** | — | Adds a star-rating system for articles with reviewer permissions. |
+  | **Auto Create Category Pages** | — | Automatically creates category pages when categories are used. Requires `managewiki-restricted`. |
+  | **AutoCreatePage** | — | Automatically creates pages based on template triggers. |
+  | **BlogPage** | comments, pollny, socialprofile, voteny | Full blog system with Blog namespace. Requires Comments, PollNY, SocialProfile, VoteNY. Conflicts with SimpleBlogPage. |
+  | **Capiunto** | — | Lua-based infobox library used as a Scribunto module dependency. |
+  | **CategoryExplorer** | — | Adds an interactive category browser widget. |
+  | **CategorySortHeaders** | — | Adds sort header letters to category page listings. |
+  | **Citoid** | visualeditor, templatedata, cite | Automatic citation generation using an external citation service. Requires VisualEditor, TemplateData, and Cite. |
+  | **CirrusSearch** | — | Full-text search powered by OpenSearch/Elasticsearch. Requires `managewiki-restricted`. Conflicts with TitleKey. |
+  | **Clean Changes** | — | Streamlined recent changes display with less visual noise. |
+  | **CollapsibleVector** | — | Adds collapsible sidebar panels to the Vector skin. |
+  | **Commentbox** | — | Adds a simple feedback comment box to pages. |
+  | **CommonsMetadata** | — | Reads structured licence metadata from Commons-hosted files. |
+  | **CustomSearchProfiles** | — | Adds custom search namespace profiles. Currently not configurable in ManageWiki; requires a platform pull request. |
+  | **DarkMode** | — | Adds a user-togglable dark mode for the wiki. |
+  | **DeleteUserPages** | — | Adds a tool to delete all user pages belonging to a given user. |
+  | **Interactive Data Maps** | — | Adds interactive layered data maps for complex visual data. |
+  | **Description2** | — | Adds a `<meta name="description">` tag using page content for SEO. |
+  | **Disambiguator** | — | Adds disambiguation page detection and special handling. |
+  | **DiscussionTools** | linter, visualeditor | Adds threaded talk page discussions with inline reply and subscription tools. Requires Linter and VisualEditor. |
+  | **DynamicSidebar** | — | Allows configuring the sidebar navigation per-user-group or per-page. |
+  | **EditSubpages** | — | Adds a batch-edit interface for a page's subpages. |
+  | **External Data** | — | Fetches and renders data from external URLs, databases, and APIs. Requires `managewiki-restricted`. |
+  | **Flex Diagrams** | — | Adds BPMN, Gantt, Mermaid, and Draw.io diagram namespaces and rendering. |
+  | **ForcePreview** | — | Requires users to preview edits before saving them. |
+  | **FontAwesome** | — | Makes Font Awesome icon fonts available in wiki pages. |
+  | **Gadgets** | — | Allows wiki administrators to define opt-in JavaScript/CSS gadgets for users. |
+  | **GeoData** | — | Adds `<coordinates>` tag and geo-tagging infrastructure for pages. |
+  | **GlobalUserPage** | — | Displays a user's global user page from meta if they have no local one. |
+  | **GTag** | — | Google Analytics / Google Tag Manager integration. |
+  | **GuidedTour** | — | Adds interactive guided tours for onboarding new users. |
+  | **Highly Automated Welcome Tool** | — | Automatically sends configurable welcome messages to new users. |
+  | **HideSection** | — | Adds a `__HIDESECTION__` magic word to hide a page section from display. |
+  | **Highlight Links in Category** | — | Highlights links to pages in a specified category. |
+  | **InterwikiSorting** | wikibaseclient | Sorts interwiki links in a defined order. Requires WikibaseClient. |
+  | **JSBreadCrumbs** | — | Adds a JavaScript-based breadcrumb trail to pages. |
+  | **JsonConfig** | — | Provides a Data namespace for storing and accessing JSON/tabular data pages. Used by Kartographer and Wikimedia-style templates. |
+  | **Language Selector** | — | Adds a language selector dropdown to the page interface. |
+  | **LastModified** | — | Adds a human-friendly "last modified" notice to page footers. |
+  | **LinkSuggest** | — | Provides autocomplete suggestions when inserting wiki links in the editor. |
+  | **LinkTarget** | — | Allows setting external links to open in a new tab by default. |
+  | **MobileFrontend** | minervaneue | Provides mobile-optimised page rendering and the Minerva skin. Requires MinervaNeue. |
+  | **MobileTabsPlugin** | — | Adds mobile-friendly tab navigation to wiki pages. |
+  | **MultimediaViewer** | — | Adds a lightbox-style media viewer for images and videos. |
+  | **MultiBoilerplate** | — | Adds a dropdown for selecting from multiple preload templates when creating pages. |
+  | **New Signup Page** | — | Replaces the standard account creation page with a more customisable design. |
+  | **Newsletter** | — | Adds a Newsletter namespace and subscription management system. Conflicts with Lingo. |
+  | **NewUserMessage** | — | Sends a configurable welcome message to newly registered users. |
+  | **New User Email Notification** | — | Sends email notifications to administrators when new users register. |
+  | **PageAssessments** | — | Adds a project-based page quality assessment system. |
+  | **PageNotice** | — | Adds configurable notices to the top or bottom of specific pages or namespaces. |
+  | **PageProperties** | — | Adds structured property storage on pages without requiring Cargo. |
+  | **Paragraph-based Edit Conflict Interface** | — | Replaces the standard merge conflict view with a side-by-side paragraph diff. |
+  | **Page Language** | — | Adds a special page for setting per-page content language. |
+  | **PerPageLanguage** | — | Stores per-page language in the database. Sets `wgPageLanguageUseDB` to `true`. |
+  | **Popups** | pageimages, textextracts | Adds hover-over page previews with thumbnails and summary text. |
+  | **PollNY** | socialprofile | Adds a poll creation and voting system. Requires SocialProfile. |
+  | **ProofreadPage** | — | Adds Page and Index namespaces for digitising and proofreading scanned books. |
+  | **PropertySuggester** | wikibaserepository | Adds property value suggestions in Wikibase item editing. Requires WikibaseRepository. |
+  | **ProtectionIndicator** | — | Adds a visual lock icon to protected pages. Conflicts with Comments. |
+  | **Purge** | — | Adds a purge button to the page interface for readers. Grants `purge` to users. |
+  | **PWA** | — | Adds Progressive Web App manifest and service worker support. |
+  | **RatePage** | — | Adds a star-rating system for pages with contests. Requires SQL tables. |
+  | **RelatedArticles** | — | Displays a list of related articles at the bottom of pages. |
+  | **RealMe** | — | Adds a real name display option for user profiles. |
+  | **RemoveRedlinks** | — | Hides red links on pages for a cleaner reading experience. |
+  | **RevisionSlider** | — | Adds an interactive slider to the diff view for navigating between revisions. |
+  | **SandboxLink** | — | Adds a link to the user's personal sandbox in the personal tools menu. |
+  | **Share** | — | Adds social sharing buttons to pages. Grants `viewsharelinks` permission. |
+  | **SimpleBlogPage** | — | Adds a simple User_blog namespace. Conflicts with BlogPage. |
+  | **SoftRedirector** | — | Adds soft redirect functionality for cross-wiki links. |
+  | **SocialProfile** | — | Full social networking suite with user profiles, gifts, relationships, boards, and stats. Conflicts with UserProfileV2. |
+  | **StandardDialogs** | — | Adds OOJS/UI standard dialog components. Automatically loads OOJSPlus. |
+  | **StructuredNavigation** | — | Adds a Navigation namespace for structured sidebar navigation menus. |
+  | **TemplateWizard** | templatedata | Adds a TemplateWizard dialog to the WikiEditor toolbar. Requires TemplateData. |
+  | **TextExtracts** | — | Provides the `extracts` API action for extracting plain text summaries of pages. |
+  | **Theme** | — | Allows per-wiki theme customisation through a wiki page. |
+  | **Thanks** | — | Adds a "Thank" button on diffs and history pages for recognising editor contributions. |
+  | **TitleKey** | — | Stores normalised title keys for better search autocomplete. Conflicts with CirrusSearch. |
+  | **UniversalLanguageSelector** | — | Adds a language selector and input method support for multilingual wikis. |
+  | **UnlinkedWikibase** | — | Enables Wikibase-like structured data without linking to an external Wikibase. Requires `managewiki-restricted`. |
+  | **UploadsLink** | — | Adds a link to a user's uploaded files in their profile. |
+  | **UserPageEditProtection** | — | Restricts editing of user pages to the owning user and sysops. |
+  | **UserProfileV2** | — | Modern user profile system. Requires `managewiki-restricted`. Conflicts with SocialProfile. Uses Amazon S3 for image storage. |
+  | **Variables** | — | Adds `#vardefine` and `#var` parser functions for in-page variable storage. |
+  | **VariablesLua** | variables | Exposes the Variables extension values to Lua/Scribunto modules. Requires Variables. |
+  | **VEForAll** | pageforms, visualeditor | Embeds VisualEditor in Page Forms fields. Requires PageForms and VisualEditor. |
+  | **WikibaseClient** | — | Connects a wiki as a client to a Wikibase repository for structured data. Requires `managewiki-restricted`. |
+  | **WikibaseRepository** | — | Turns a wiki into a full Wikibase repository (Item/Property namespaces). Requires `managewiki-restricted`. |
+  | **Wikibase EDTF** | wikibaserepository | Adds EDTF (Extended Date/Time Format) data type support for Wikibase. |
+  | **WikibaseLexeme** | wikibaserepository, universallanguageselector | Adds Lexeme and Form entity types to Wikibase. |
+  | **WikibaseQualityConstraints** | wikibaserepository | Adds constraint checking for Wikibase properties. Requires SQL table. |
+  | **WikidataPageBanner** | — | Adds large banner images to pages sourced from Wikidata. |
+  | **WikiForum** | — | Adds a full forum system with categories, topics, and posts. Requires SQL tables and a forumadmin group. |
+  | **WikiLove** | — | Adds a WikiLove toolbar for sending appreciation tokens to other editors. |
+  | **Wikimedia Incubator** | — | Adds Wikimedia Incubator test wiki functionality. Requires `managewiki-restricted`. |
+</Accordion>

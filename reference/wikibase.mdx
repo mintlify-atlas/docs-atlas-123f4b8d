@@ -1,0 +1,232 @@
+---
+title: "Wikibase Configuration Reference — WikiOasis Farm"
+sidebarTitle: "Wikibase"
+description: "Complete reference for Wikibase.php: entity sources, repo and client settings, WikibaseLexeme support, and MobileFrontend integration on WikiOasis."
+---
+
+`Wikibase.php` configures the Wikibase extension for every wiki in the WikiOasis farm that has Wikibase enabled. Rather than a static configuration, it is driven by per-wiki ManageWiki settings — namespace IDs, the repo database, the repo URL, and feature flags are all resolved at runtime from `$wmg*` variables. The file configures both sides of Wikibase simultaneously: every Wikibase-enabled wiki is treated as a potential repo (`$wgWBRepoSettings`) and as a client of that repo (`$wgWBClientSettings`), with the entity source pointing locally to the same wiki's database. The configuration is loaded conditionally by `GlobalSettings.php` only when `Wikibase` appears in the active extensions list for the current wiki.
+
+<Note>
+  Wikibase is loaded conditionally in `GlobalSettings.php` — the settings in `Wikibase.php` are only applied when `$wi->isExtensionActive('Wikibase')` returns `true` for the current wiki.
+</Note>
+
+## Entity Sources
+
+The entity source is always named `'local'` and points at the same database as the wiki itself. It is constructed as a PHP array before being assigned to both `$wgWBRepoSettings` and `$wgWBClientSettings`.
+
+<ResponseField name="local" type="array">
+  The single entity source definition shared by both repo and client settings.
+
+  <Expandable title="Entity source fields">
+    <ResponseField name="entityNamespaces" type="array">
+      Maps entity type strings to namespace IDs. Always contains `'item'` and `'property'`; also contains `'lexeme'` (namespace 146) when WikibaseLexeme is active.
+    </ResponseField>
+    <ResponseField name="repoDatabase" type="string">
+      The database name of the Wikibase repo. Set from `$wmgWikibaseRepoDatabase`.
+    </ResponseField>
+    <ResponseField name="baseUri" type="string">
+      The base URI for entities, constructed as `$wmgWikibaseRepoUrl . '/entity/'`.
+    </ResponseField>
+    <ResponseField name="interwikiPrefix" type="string">
+      Empty string — entities on the local source have no interwiki prefix.
+    </ResponseField>
+    <ResponseField name="rdfNodeNamespacePrefix" type="string">
+      `'wd'` — standard Wikidata-compatible RDF prefix for nodes.
+    </ResponseField>
+    <ResponseField name="rdfPredicateNamespacePrefix" type="string">
+      Empty string — no prefix for RDF predicates.
+    </ResponseField>
+    <ResponseField name="type" type="string">
+      `'db'` — the entity source reads from a database.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Namespace IDs
+
+Entity namespaces are controlled by per-wiki ManageWiki settings rather than hardcoded values.
+
+| Entity Type | ManageWiki Variable | Applies To |
+|---|---|---|
+| Item | `$wmgWikibaseRepoItemNamespaceID` | Repo entity source, `$wgWBRepoSettings['entityNamespaces']` |
+| Property | `$wmgWikibaseRepoPropertyNamespaceID` | Repo entity source, `$wgWBRepoSettings['entityNamespaces']` |
+| Lexeme | Hardcoded `146` | Added only when WikibaseLexeme is active |
+
+Configure these values on a per-wiki basis via **Special:ManageWiki/settings**.
+
+## WikibaseLexeme Support
+
+When the `WikibaseLexeme` extension is active for a wiki, `Wikibase.php` extends the entity source and repo settings to include lexemes:
+
+```php
+if ( $wi->isExtensionActive( 'WikibaseLexeme' ) ) {
+    $entitySources['local']['entityNamespaces']['lexeme'] = 146;
+    $wgWBRepoSettings['entityNamespaces']['lexeme'] = 146;
+}
+```
+
+Lexeme namespace 146 is added to both the entity source definition (so the client and the repo can locate lexeme entities) and to `$wgWBRepoSettings['entityNamespaces']` (so the repo stores and serves them).
+
+<Tip>
+  To enable WikibaseLexeme on a wiki, first ensure Wikibase itself is enabled, then enable WikibaseLexeme via **Special:ManageWiki/extensions**. The lexeme namespace (146) will be registered automatically on the next request.
+</Tip>
+
+## $wgWBRepoSettings
+
+Settings that configure the wiki as a **Wikibase repository** (the authoritative source of entity data).
+
+<ResponseField name="entitySources" type="array">
+  The full `$entitySources` array (see above). Assigned after WikibaseLexeme detection so lexeme entries are included if active.
+</ResponseField>
+
+<ResponseField name="localEntitySourceName" type="string">
+  `'local'` — tells the repo which entry in `entitySources` is the canonical local source.
+</ResponseField>
+
+<ResponseField name="entityNamespaces" type="array">
+  Maps `'item'`, `'property'` (and optionally `'lexeme'`) to their namespace IDs. Values come from `$wmgWikibaseRepoItemNamespaceID` and `$wmgWikibaseRepoPropertyNamespaceID`.
+</ResponseField>
+
+<ResponseField name="allowEntityImport" type="bool">
+  Controlled by `$wmgAllowEntityImport`. Determines whether entities can be imported from another Wikibase instance via Special:Import.
+</ResponseField>
+
+<ResponseField name="enableEntitySearchUI" type="bool">
+  Controlled by `$wmgEnableEntitySearchUI`. Toggles the entity search UI in the repo.
+</ResponseField>
+
+<ResponseField name="federatedPropertiesEnabled" type="bool">
+  Controlled by `$wmgFederatedPropertiesEnabled`. When `true`, the repo reads property definitions from a federated source (e.g. Wikidata) rather than local properties.
+</ResponseField>
+
+<ResponseField name="formatterUrlProperty" type="string|null">
+  Controlled by `$wmgFormatterUrlProperty` (or `null` if empty). The property ID used to provide formatted display URLs for external identifiers.
+</ResponseField>
+
+<ResponseField name="canonicalUriProperty" type="string|null">
+  Controlled by `$wmgCanonicalUriProperty` (or `null` if empty). The property ID used to declare canonical URIs for entities.
+</ResponseField>
+
+<ResponseField name="dataRightsUrl" type="string">
+  Hardcoded to `'https://creativecommons.org/publicdomain/zero/1.0/'`. All entity data on WikiOasis Wikibase repos is licensed under **CC0 1.0 Universal** (public domain dedication).
+</ResponseField>
+
+<ResponseField name="siteGlobalID" type="string">
+  Set to `$wgDBname` — each wiki identifies itself to the Wikibase federation by its database name.
+</ResponseField>
+
+<ResponseField name="siteLinkGroups" type="array">
+  `['wikioasis']` — the sitelink group used for WikiOasis wikis. Sites in this group can be linked to items.
+</ResponseField>
+
+<ResponseField name="specialSiteLinkGroups" type="array">
+  `[]` — no special sitelink groups are configured.
+</ResponseField>
+
+## $wgWBClientSettings
+
+Settings that configure the wiki as a **Wikibase client** (a consumer of entity data from a repo).
+
+<ResponseField name="entitySources" type="array">
+  The same `$entitySources` array as used by the repo, pointing at the local wiki's database.
+</ResponseField>
+
+<ResponseField name="itemAndPropertySourceName" type="string">
+  `'local'` — tells the client which entity source to use for items and properties.
+</ResponseField>
+
+<ResponseField name="repoUrl" type="string">
+  Set from `$wmgWikibaseRepoUrl`. The URL of the Wikibase repo this client is connected to.
+</ResponseField>
+
+<ResponseField name="repoDatabase" type="string">
+  Set from `$wmgWikibaseRepoDatabase`. The DB name of the repo for direct database connections.
+</ResponseField>
+
+<ResponseField name="changesDatabase" type="string">
+  Also set from `$wmgWikibaseRepoDatabase`. The database used to read recent entity changes for propagation to client wikis.
+</ResponseField>
+
+<ResponseField name="siteGlobalID" type="string">
+  Set to `$wgDBname`, matching the repo's `siteGlobalID` for the same wiki.
+</ResponseField>
+
+<ResponseField name="repoScriptPath" type="string">
+  `''` — the repo's script path is at the domain root.
+</ResponseField>
+
+<ResponseField name="repoArticlePath" type="string">
+  `'/wiki/$1'` — standard MediaWiki article path for entity page links.
+</ResponseField>
+
+<ResponseField name="siteGroup" type="string">
+  `'wikioasis'` — the sitelink group this client belongs to, matching `siteLinkGroups` on the repo.
+</ResponseField>
+
+<ResponseField name="repoNamespaces" type="array">
+  ```json
+  {
+    "wikibase-item": "Item",
+    "wikibase-property": "Property"
+  }
+  ```
+  Maps Wikibase entity type keys to their namespace names on the repo.
+</ResponseField>
+
+<ResponseField name="siteLinksGroups" type="array">
+  `['wikioasis']` — sitelink groups the client participates in.
+</ResponseField>
+
+<ResponseField name="purgeCacheBatchSize" type="int">
+  `100` — the number of pages to purge in a single batch when entity data changes.
+</ResponseField>
+
+<ResponseField name="recentChangesBatchSize" type="int">
+  `100` — the number of recent changes to process per batch when propagating entity changes to client wikis.
+</ResponseField>
+
+<ResponseField name="tmpUnconnectedPagePagePropMigrationStage" type="int">
+  Set to `MIGRATION_NEW` — opts into the new unconnected page property storage format.
+</ResponseField>
+
+## MobileFrontend Integration
+
+```php
+$wgMFUseWikibase = true;
+```
+
+Setting `$wgMFUseWikibase` to `true` enables MobileFrontend's Wikibase integration, which allows the mobile skin to display entity descriptions beneath article titles and use other Wikibase-sourced metadata when rendering pages on mobile.
+
+## Complete Configuration Flow
+
+<Steps>
+  <Step title="Extension check">
+    `GlobalSettings.php` checks `$wi->isExtensionActive('Wikibase')` before including `Wikibase.php`. If Wikibase is not active for the wiki, this file is never loaded.
+  </Step>
+  <Step title="Entity source construction">
+    `$entitySources` is built from the per-wiki ManageWiki settings (`$wmgWikibaseRepoItemNamespaceID`, `$wmgWikibaseRepoPropertyNamespaceID`, `$wmgWikibaseRepoDatabase`, `$wmgWikibaseRepoUrl`).
+  </Step>
+  <Step title="WikibaseLexeme detection">
+    If WikibaseLexeme is active, namespace 146 is injected into `$entitySources` and `$wgWBRepoSettings['entityNamespaces']`.
+  </Step>
+  <Step title="Repo settings applied">
+    `$wgWBRepoSettings` is populated with entity sources, namespace IDs, feature flags, data rights, and site identity.
+  </Step>
+  <Step title="Client settings applied">
+    `$wgWBClientSettings` is populated with the same entity sources plus client-specific connection settings and batch sizes.
+  </Step>
+  <Step title="MobileFrontend flag set">
+    `$wgMFUseWikibase = true` enables the MobileFrontend–Wikibase integration.
+  </Step>
+  <Step title="Cleanup">
+    The local `$entitySources` variable is `unset()` to avoid polluting the global namespace.
+  </Step>
+</Steps>
+
+<Note>
+  Quality constraints property and item IDs (used for Wikibase constraint checking) are mapped in `LocalSettings.php` following Wikidata-compatible patterns. These are separate from the settings in `Wikibase.php` and are applied after the main Wikibase configuration.
+</Note>
+
+<Tip>
+  To enable Wikibase on a wiki: (1) navigate to **Special:ManageWiki/extensions** and enable `Wikibase`; (2) go to **Special:ManageWiki/settings** and configure `wmgWikibaseRepoItemNamespaceID`, `wmgWikibaseRepoPropertyNamespaceID`, `wmgWikibaseRepoDatabase`, and `wmgWikibaseRepoUrl` for your setup. The `local` entity source is automatically constructed from these values on the next request.
+</Tip>

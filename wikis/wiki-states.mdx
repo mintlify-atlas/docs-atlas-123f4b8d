@@ -1,0 +1,105 @@
+---
+title: "Understanding Wiki Lifecycle States on WikiOasis Farm"
+sidebarTitle: "Wiki States"
+description: "Understand the five wiki lifecycle states on WikiOasis — inactive, closed, removed, and deleted — with durations, behaviors, and HTTP responses."
+---
+
+Every wiki on WikiOasis passes through a defined lifecycle governed by the CreateWiki extension and enforced by `MirahezeFunctions` at request time. State information is stored in the `cw_wikis` database table, propagated into the per-wiki binary cache under `cw_cache/{dbname}.php`, and exposed as boolean globals (`$cwClosed`, `$cwDeleted`, `$cwInactive`, etc.) that LocalSettings.php and GlobalSettings.php use to apply the correct permission restrictions. Understanding these states is essential for wiki administrators, stewards, and anyone operating on the farm — a wiki that has been closed for 30 days or removed for 245 days will automatically advance to the next state unless action is taken.
+
+## State Durations
+
+The thresholds for each automatic state transition are defined in `wgCreateWikiStateDays` in `LocalSettings.php`:
+
+| State | Duration | Trigger |
+|-------|----------|---------|
+| **inactive** | 90 days | No edits recorded for 90+ days |
+| **closed** | 30 days | Wiki has been closed for 30+ days without re-opening |
+| **removed** | 245 days | Wiki has been in the removed state for 245+ days |
+| **deleted** | 30 days | Wiki in deleted state; permanent removal after 30 days |
+
+<Note>
+  State transitions are managed by the `ManageInactiveWikis` maintenance script, which is enabled via `wgCreateWikiEnableManageInactiveWikis = true`. Stewards and tech staff can manually override a wiki's state at any time through Special:ManageWiki or the CreateWiki management interface on metawiki. The `managewiki-restricted` right is required to change a wiki's state.
+</Note>
+
+## What Each State Means
+
+### Active
+
+A wiki is **active** when it has received at least one edit within the last 90 days and has not been explicitly closed. All normal permissions apply. Active wikis appear in `cw_cache/databases.php` under the main `databases` key and are fully served by the farm.
+
+### Inactive
+
+A wiki becomes **inactive** after 90 consecutive days without any recorded edits. The `cwInactive` global is set to `true` (or `'exempt'` if the wiki has an approved inactivity exemption). Inactive wikis are still publicly readable and writable — inactivity is a signal, not a restriction. Stewards will contact the wiki's bureaucrats before advancing the state further.
+
+Exemption reasons available to stewards include: *Wiki completed and made to be read*, *Wiki made for time-based gathering*, *Wiki made to be read*, *Temporary exemption for exceptional hardship*, and *Other, see DPE*.
+
+### Closed
+
+A **closed** wiki has had its edit rights explicitly revoked — either by a steward action or by a bureaucrat requesting closure. The `cwClosed` global is set to `true`. GlobalSettings.php applies a `wgRevokePermissions` entry that strips `block`, `edit`, `delete`, `upload`, and related destructive rights from **all** user groups including administrators, preventing any further content changes. The wiki remains publicly readable.
+
+A wiki may be re-opened by a steward. If it remains closed for 30 days, it advances to the **removed** state.
+
+### Removed
+
+A **removed** wiki is no longer accessible to the public — its content exists in the database but the wiki is not served. The `cwDeleted` global remains `false` at this stage; removal is a pre-deletion hold. Data is preserved for the full 245-day removed period, giving wiki administrators time to request restoration or export their content.
+
+### Deleted
+
+A **deleted** wiki has `cwDeleted` set to `true` in its cache. When `LocalSettings.php` detects this flag during a web request, it registers `wfHandleDeletedWiki` as the `MW_FINAL_SETUP_CALLBACK` and serves **DeletedWiki.php** instead of the wiki. The wiki's database entry moves to `cw_cache/deleted.php`, which `getLocalDatabases()` still includes in `$wgLocalDatabases` so CLI maintenance scripts can access deleted wikis when needed.
+
+After 30 days in the deleted state, the wiki's database is permanently dropped.
+
+## Error Pages
+
+### DeletedWiki.php
+
+Served for any wiki where `$cwDeleted` is `true`. It returns **HTTP 410 Gone** with full WikiOasis branding, displaying the message *"This wiki has been marked as deleted."* alongside links to [meta.wikioasis.org](https://meta.wikioasis.org) and the [WikiOasis Discord](https://discord.gg/GrrTcsVC2x). The page uses animated gradient blobs for visual consistency with the rest of the WikiOasis error page suite.
+
+### MissingWiki.php
+
+Served when `MirahezeFunctions::isMissing()` returns `true` — meaning the resolved database name is not present in `$wgConf->wikis` at all. This happens for subdomains that have never been registered. It also returns **HTTP 410 Gone** and displays *"We couldn't find this wiki, double check that you've typed the URL correctly."*
+
+Critically, after rendering the page, `MissingWiki.php` calls:
+
+```php
+$dataStore = MediaWikiServices::getInstance()->get('CreateWikiDataStore');
+$dataStore->syncCache();
+```
+
+This forces a cache refresh so that a legitimately created wiki that appears missing due to a stale `databases.php` cache will self-heal on the next request — no operator intervention required.
+
+### MissingSkyWiki.php
+
+A specialised variant of the missing-wiki page served exclusively for `*.skywiki.org` hostnames when the requested wiki is not found. Rather than a generic "wiki missing" message, it directs bureaucrats to email **stewards@wikioasis.org** to request migration of their SkyWiki to the WikiOasis farm infrastructure.
+
+The routing logic in `LocalSettings.php`:
+
+```php
+if (preg_match('/(^|\.)skywiki\.org$/', $host)) {
+    require_once '/srv/mediawiki/config/MissingSkyWiki.php';
+} else {
+    require_once '/srv/mediawiki/config/MissingWiki.php';
+}
+```
+
+## State Flow Diagram
+
+```
+Active ──(90 days no edits)──▶ Inactive
+                                    │
+                          (steward closes)
+                                    ▼
+                                 Closed ──(30 days closed)──▶ Removed
+                                                                   │
+                                                        (245 days removed)
+                                                                   ▼
+                                                               Deleted
+                                                                   │
+                                                         (30 days deleted)
+                                                                   ▼
+                                                        Database permanently dropped
+```
+
+<Warning>
+  Restoration from the **removed** or **deleted** state requires steward action and must be requested before the retention window expires. After the database is permanently dropped, content cannot be recovered unless a prior data dump was made.
+</Warning>

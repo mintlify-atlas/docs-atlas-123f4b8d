@@ -1,0 +1,128 @@
+---
+title: "How to Manage Your Wiki with ManageWiki on WikiOasis"
+sidebarTitle: "Managing Wikis"
+description: "How ManageWiki modules, per-wiki config resolution, extension state helpers, and disallowed rights work together in the WikiOasis farm."
+---
+
+Once a wiki is live, its administrators control almost every aspect of its behaviour through **Special:ManageWiki** — the self-service configuration portal provided by the ManageWiki extension. WikiOasis enables all five ManageWiki modules, giving bureaucrats granular control over core settings, extensions, custom namespaces, user-group permissions, and advanced configuration variables. Under the hood, each change a wiki admin saves is written into a per-wiki PHP cache file at `/srv/mediawiki/cw_cache/{dbname}.php`, which `MirahezeFunctions` reads and merges into MediaWiki's `SiteConfiguration` (`$wgConf`) on every request. This design means configuration changes take effect without any server restart and without touching shared configuration files.
+
+## ManageWiki Modules
+
+All five modules are enabled via `wgManageWikiModulesEnabled` in `LocalSettings.php`:
+
+<Accordion title="core — Basic wiki settings">
+  Controls the wiki's primary domain, MediaWiki version (requires `managewiki-restricted`), language code, and other foundational parameters. Version and domain changes are handled by the `onManageWikiCoreAddFormFields` and `onManageWikiCoreFormSubmission` hooks in `MirahezeFunctions`, which also update `wikiVersions.php` atomically for immediate effect.
+</Accordion>
+
+<Accordion title="extensions — Extension activation">
+  Allows wiki administrators to enable or disable any extension listed in `wgManageWikiExtensions`. The farm maintains a version-specific `extension-list.php` cache under `cw_cache/{version}/` to avoid re-scanning the filesystem on every request. Extensions in `MirahezeFunctions::$disabledExtensions` are globally locked and display a reason message; they require `managewiki-restricted` to re-enable.
+</Accordion>
+
+<Accordion title="namespaces — Custom namespace management">
+  Exposes controls for creating, renaming, and configuring custom namespaces — including subpage support, content model, search-default status, protection level, and namespace aliases. Namespace configuration is stored in the wiki's cache array under the `namespaces` key and merged into `$wgConf->settings` by `getManageWikiConfigCache()`.
+</Accordion>
+
+<Accordion title="permissions — User-group permissions">
+  Enables wiki admins to configure `wgGroupPermissions`, `wgAddGroups`, `wgRemoveGroups`, `wgGroupsAddToSelf`, `wgGroupsRemoveFromSelf`, `wgAutopromote`, and `wgAutopromoteOnce` for custom user groups — subject to the farm-wide disallowed rights and disallowed groups lists.
+</Accordion>
+
+<Accordion title="settings — Advanced configuration variables">
+  Exposes a curated list of `$wg*` configuration variables (defined in `ManageWikiSettings.php`) that wiki admins can adjust per-wiki. Values are stored in the `settings` key of the wiki cache and resolved by `getSettingValue()`.
+</Accordion>
+
+## Per-Wiki Configuration Resolution
+
+`MirahezeFunctions` resolves per-wiki settings through a layered cache system.
+
+### getManageWikiConfigCache()
+
+```php
+public static function getManageWikiConfigCache(): array
+```
+
+Reads the per-wiki binary cache from `cw_cache/{dbname}.php` and expands it into a full `$wgConf->settings`-compatible array. It processes:
+
+- **Core settings** — e.g. `wgLanguageCode` from `$cacheArray['core']`
+- **States** — maps `cwPrivate`, `cwClosed`, `cwLocked`, `cwDeleted`, `cwInactive`, `cwExperimental` booleans from `$cacheArray['states']`
+- **Settings** — iterates `$cacheArray['settings']` and sets each variable under the `default` key
+- **Namespaces** — builds `wgExtraNamespaces`, `wgNamespacesWithSubpages`, `wgContentNamespaces`, `wgNamespaceProtection`, `wgNamespaceAliases`, and related globals
+- **Permissions** — builds `wgGroupPermissions`, `wgAddGroups`, `wgRemoveGroups`, `wgGroupsAddToSelf`, `wgGroupsRemoveFromSelf`, `wgAutopromote`, and `wgAutopromoteOnce`
+
+### getSettingValue()
+
+```php
+public function getSettingValue(string $setting, string $wiki = 'default'): mixed
+```
+
+Returns a single setting value for the current wiki. It first checks the in-memory cache array (`$cacheArray['settings'][$setting]`); if the key is absent, it falls back to `$wgConf->get($setting, $wiki)`, which traverses the full `SiteConfiguration` hierarchy including farm-wide defaults.
+
+### getConfigGlobals()
+
+```php
+public static function getConfigGlobals(): array
+```
+
+The main entry point called during `LocalSettings.php` bootstrap. It:
+
+1. Computes the maximum mtime across `LocalSettings.php`, `ManageWikiExtensions.php`, `ManageWikiNamespaces.php`, `ManageWikiSettings.php`, `Defines.php`, and the wiki's own cache file.
+2. Attempts to read a pre-built globals array from `cw_cache/config-{dbname}.php`.
+3. On a cache miss or mtime mismatch, calls `getManageWikiConfigCache()` to merge ManageWiki data into `$wgConf->settings`, resolves all config values via `getConfigForCaching()`, and writes a new cache shard atomically using `writeToCache()`.
+
+The resulting array is extracted into PHP globals via `extract($globals)` in `LocalSettings.php`, making every per-wiki setting available as a first-class global variable.
+
+## Extension State Helpers
+
+Three instance methods on `MirahezeFunctions` provide a clean API for conditionally applying config based on whether specific extensions are active on the current wiki.
+
+```php
+public function isExtensionActive(string $extension): bool
+```
+Returns `true` if the named extension appears in the resolved active-extensions list for the current wiki.
+
+```php
+public function isAnyOfExtensionsActive(string ...$extensions): bool
+```
+Returns `true` if **at least one** of the supplied extension names is active. Useful for guarding settings shared by a family of related extensions.
+
+```php
+public function isAllOfExtensionsActive(string ...$extensions): bool
+```
+Returns `true` only if **every** supplied extension name is active. Use this when a setting only makes sense when multiple cooperating extensions are all enabled together.
+
+All three methods share a static `$activeExtensions` cache populated by `getActiveExtensions()`, so repeated calls within a single request incur no extra I/O.
+
+### handleDisabledExtensions()
+
+```php
+public static function handleDisabledExtensions(): void
+```
+
+Iterates `MirahezeFunctions::$disabledExtensions` — a key-value map of extension slug to human-readable reason — and for each entry:
+
+- Injects a bold "Note" help text into `$wgManageWikiExtensions[$name]['help']` explaining that the extension is globally disabled.
+- Sets `$wgManageWikiExtensions[$name]['requires']['permissions']` to `['managewiki-restricted']`, effectively locking the toggle for regular wiki admins.
+
+Currently disabled extensions include `drafts`, `score`, `wikiforum`, `lingo`, `chameleon`, `snapwikiskin`, `hawelcome`, and `semanticscribunto`.
+
+## Disallowed Rights and Groups
+
+WikiOasis configures `wgManageWikiPermissionsDisallowedRights` and `wgManageWikiPermissionsDisallowedGroups` to prevent wiki administrators from granting sensitive rights that must remain under steward or tech-team control.
+
+<CardGroup cols={2}>
+  <Card title="Globally disallowed rights (any group)" icon="shield-xmark">
+    Rights that no wiki admin may grant to any group include: all CheckUser rights, all CentralAuth management rights, all global blocking/grouping rights, `managewiki-restricted`, `hideuser`, `suppressrevision`, `viewsuppressed`, `suppressionlog`, `userrights`, `createwiki`, and many others covering oversight, OAuth management, and PII handling.
+  </Card>
+  <Card title="Disallowed from the user group" icon="user-slash">
+    The `user` group may not be granted: `autoconfirmed`, `noratelimit`, `skipcaptcha`, all `managewiki-*` rights, `globalblock-whitelist`, `ipblock-exempt`, or `interwiki`.
+  </Card>
+  <Card title="Disallowed from anonymous (*)" icon="eye-slash">
+    Anonymous users (`*`) may not be granted `read`, `skipcaptcha`, `editsitecss/js/json`, `edituserjs/css/json`, `managewiki-*` rights, `noratelimit`, `autoconfirmed`, `interwiki`, `ipblock-exempt`, or `viewmyprivateinfo`, among others.
+  </Card>
+  <Card title="Disallowed user groups" icon="users-slash">
+    Wiki admins may not create or configure the following groups: `checkuser`, `smwadministrator`, `oversight`, `steward`, `suppress`, `tech`, and `safety`. These are reserved for the global rights infrastructure.
+  </Card>
+</CardGroup>
+
+<Note>
+  The `managewiki-restricted` right itself is listed under `wgManageWikiPermissionsDisallowedRights` for all groups. Only stewards and tech team members — who receive this right via global group membership on metawiki — can perform restricted ManageWiki actions such as changing a wiki's MediaWiki version, primary domain, or enabling globally-disabled extensions.
+</Note>

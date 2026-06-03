@@ -1,0 +1,168 @@
+---
+title: "Database Architecture, Clusters, and Topology Guide"
+sidebarTitle: "Database"
+description: "MySQL/MariaDB database layer for the WikiOasis farm using LBFactoryMulti, cluster topology, parser cache host, and read-only maintenance patterns."
+---
+
+WikiOasis runs a MySQL/MariaDB database layer backed by MediaWiki's `LBFactoryMulti` load-balancer factory. Every wiki in the farm shares the same physical host for general-purpose reads and writes, while a dedicated second host isolates parser-cache workloads. Miser mode is enabled farm-wide, and a commented-out `readOnlyBySection` block lets operators flip individual clusters into maintenance mode without touching any other part of the configuration.
+
+## Miser Mode
+
+`$wgMiserMode = true` is set unconditionally in `Database.php`. This disables several expensive database queries that MediaWiki would otherwise run on every page view — most notably certain `DISTINCT` and `ORDER BY` queries on large tables. On a shared farm with hundreds of wikis, miser mode is essential for keeping query latency predictable across tenants.
+
+## Load Balancer Factory
+
+The entire farm uses `Wikimedia\Rdbms\LBFactoryMulti`. Connection details (host, user, password) are injected at runtime from `PrivateSettings.php` via the `$wgDBservers` array. If that array is absent the factory falls back to compile-time defaults.
+
+```php
+$wgLBFactoryConf = [
+    'class' => \Wikimedia\Rdbms\LBFactoryMulti::class,
+    'secret' => $wgSecretKey,
+
+    // Per-wiki cluster assignment from MirahezeFunctions::getDatabaseClusters()
+    'sectionsByDB' => $wi->wikiDBClusters,
+
+    'sectionLoads' => [
+        'DEFAULT' => [ 'db-c1-us-east-021' => 0 ],
+        'c1'      => [ 'db-c1-us-east-021' => 0 ],
+    ],
+
+    'serverTemplate' => [
+        'dbname'   => $wgDBname,
+        'user'     => $wgDBuser,
+        'password' => $wgDBpassword,
+        'type'     => 'mysql',
+        'flags'    => DBO_DEFAULT,
+        'variables' => [
+            'innodb_lock_wait_timeout' => 120,
+        ],
+    ],
+
+    'hostsByName' => [
+        'db-c1-us-east-021' => $primaryServer['host'],
+        'db-pc-us-east-011' => 'db-pc-us-east-011',
+    ],
+
+    'externalLoads' => [
+        'echo' => [ 'db-c1-us-east-021' => 0 ],
+        'pc1'  => [ 'db-pc-us-east-011' => 0 ],
+    ],
+
+    'templateOverridesByCluster' => [
+        'pc1' => [ 'dbname' => 'parsercache' ],
+    ],
+
+    'readOnlyBySection' => [
+        // 'DEFAULT' => 'Maintenance in progress.',
+        // 'c1'      => 'Maintenance in progress.',
+    ],
+];
+```
+
+<Note>
+  Database credentials — host, username, and password — come exclusively from
+  `PrivateSettings.php` via `$wgDBservers[0]`. That file is not tracked in the
+  public repository. Never hard-code credentials in `Database.php`.
+</Note>
+
+## Cluster Topology
+
+The farm currently operates two physical database hosts serving four named clusters.
+
+| Cluster | Host | Purpose |
+|---------|------|---------|
+| `DEFAULT` | `db-c1-us-east-021` | Fallback for wikis with no explicit cluster assignment |
+| `c1` | `db-c1-us-east-021` | General wiki databases |
+| `echo` (external) | `db-c1-us-east-021` | Echo (notifications) external storage |
+| `pc1` (external) | `db-pc-us-east-011` | Parser cache (`parsercache` database) |
+
+<CardGroup cols={2}>
+  <Card title="Primary Host" icon="database">
+    **db-c1-us-east-021** serves both the `DEFAULT` and `c1` section loads as
+    well as the `echo` external storage cluster. A load weight of `0` means
+    this is the only server in each section — no replicas are configured.
+  </Card>
+  <Card title="Parser Cache Host" icon="bolt">
+    **db-pc-us-east-011** is reserved exclusively for the `pc1` external
+    cluster. The `templateOverridesByCluster` block forces every connection on
+    this cluster to use `dbname = parsercache` and `tableName = objectcache`,
+    keeping parser cache I/O fully isolated from wiki databases.
+  </Card>
+</CardGroup>
+
+## Wiki-to-Cluster Mapping via MirahezeFunctions
+
+`sectionsByDB` is populated at boot time from `$wi->wikiDBClusters`, which is
+the return value of `MirahezeFunctions::getDatabaseClusters()`. That method
+reads the compiled database list files (`databases.php`, `deleted.php`) from
+`/srv/mediawiki/cw_cache/` and returns a flat map of database name → cluster
+name:
+
+```php
+public static function getDatabaseClusters(): array {
+    $allDatabases     = self::readDbListFile( 'databases', false );
+    $deletedDatabases = self::readDbListFile( 'deleted',   false );
+
+    $databases = [ ...$allDatabases, ...$deletedDatabases ];
+
+    return array_combine(
+        array_keys( $databases ),
+        array_column( $databases, 'c' )   // 'c' = cluster key
+    );
+}
+```
+
+Each wiki's cluster key (`c`) is written by CreateWiki when the wiki is
+provisioned and stored in the cache files. At request time,
+`LBFactoryMulti` uses the resulting map to route every database connection
+to the correct section.
+
+## InnoDB Lock Wait Timeout
+
+All connections inherit `innodb_lock_wait_timeout = 120` seconds from the
+`serverTemplate.variables` block. This gives long-running maintenance scripts
+reasonable headroom before a lock contention error is surfaced, while still
+bounding worst-case wait time for interactive requests.
+
+## Read-Only Mode
+
+`readOnlyBySection` accepts a map of cluster names to human-readable messages.
+When a cluster name is present in the map, MediaWiki places every wiki in that
+cluster into read-only mode and displays the provided message. The production
+configuration ships with the `DEFAULT` and `c1` entries commented out; an
+operator uncomments them during scheduled maintenance windows and recomments
+them when the window ends.
+
+```php
+'readOnlyBySection' => [
+    // Uncomment during maintenance:
+    // 'DEFAULT' => 'Maintenance is in progress. Please try again in a few minutes.',
+    // 'c1'      => 'Maintenance is in progress. Please try again in a few minutes.',
+],
+```
+
+<Warning>
+  Uncommenting a `readOnlyBySection` entry affects **every wiki** assigned to
+  that cluster simultaneously. Verify the target cluster in
+  `getDatabaseClusters()` output before enabling read-only mode in production.
+</Warning>
+
+## External Storage Clusters
+
+MediaWiki's external storage mechanism stores blobs (archived revision text,
+job queue payloads) outside the main wiki database. WikiOasis defines two
+external clusters:
+
+<Accordion title="echo — revision text on db-c1-us-east-021">
+  The `echo` cluster routes external blob storage to the same primary host.
+  This is the default external cluster used for storing archived revision text
+  and is intentionally co-located with general wiki data to simplify backup
+  procedures.
+</Accordion>
+
+<Accordion title="pc1 — parser cache on db-pc-us-east-011">
+  The `pc1` cluster connects to the dedicated parser-cache host. The
+  `templateOverridesByCluster` block overrides `dbname` to `parsercache` for
+  every connection in this cluster, so the `objectcache` table lives in its
+  own database schema, fully separated from any wiki data.
+</Accordion>

@@ -1,0 +1,145 @@
+---
+title: "WikiOasis mw-config: Farm Architecture and Pipeline"
+sidebarTitle: "Architecture"
+description: "Explore the WikiOasis farm architecture: the bootstrap sequence, configuration pipeline, realm system, and every file's role in serving wikis."
+---
+
+WikiOasis mw-config is not a single configuration file — it is a layered pipeline of PHP files that MediaWiki evaluates in a deliberate sequence on every web request and CLI invocation. At the top of that pipeline sits `LocalSettings.php`, which bootstraps the farm by loading credentials, instantiating the core utility class, populating MediaWiki's `SiteConfiguration` object, and then handing off to a chain of specialised files that each handle one concern: global extension loading, per-wiki database routing, cache configuration, ManageWiki registries, and finally per-wiki special-case overrides. Understanding this architecture makes it straightforward to know exactly which file to edit for any given change.
+
+## Request Lifecycle
+
+The following steps describe the complete journey from an incoming HTTP request to a fully-configured MediaWiki instance.
+
+<Steps>
+  <Step title="MediaWiki Entry Point">
+    A request arrives at an entry point (`index.php`, `api.php`, `load.php`, etc.). MediaWiki calls `require_once 'LocalSettings.php'` to begin farm initialisation. Guard clauses at the top of `LocalSettings.php` abort immediately if `MEDIAWIKI`, `CACHE_MEMCACHED`, or `MW_ENTRY_POINT` are not defined, preventing direct web access.
+  </Step>
+  <Step title="PrivateSettings & MirahezeFunctions Bootstrap">
+    `LocalSettings.php` loads `PrivateSettings.php` (database credentials, secret keys — not in the public repository) and then `MirahezeFunctions.php`. With the class available, it loads `GlobalExtensions.php` to register farm-wide skins and extensions, and finally constructs `$wi = new MirahezeFunctions()`.
+  </Step>
+  <Step title="MirahezeFunctions Constructor">
+    The constructor calls `setupSiteConfiguration()` which creates a fresh `SiteConfiguration` instance, sets `$wgConf->suffixes` to `['wiki', 'wikibeta']`, and populates `$wgConf->wikis` from the CreateWiki cache (`databases.php`). It then determines `$wi->dbname` via `getCurrentDatabase()`, validates that the suffix matches the realm, resolves `$wi->server`, `$wi->sitename`, `$wi->version`, `$wi->realm`, and `$wi->missing`, and writes `wgDBname` and `wgServer` back into `$wgConf->settings`.
+  </Step>
+  <Step title="LocalSettings SiteConfiguration Population">
+    Back in `LocalSettings.php`, a large `$wgConf->settings += [...]` block populates hundreds of per-wiki-overridable settings with farm defaults — covering email, uploads, search, ManageWiki parameters, CentralAuth virtual domain mappings, and more. Settings keyed by `dbname` override the `'default'` value for specific wikis.
+  </Step>
+  <Step title="ManageWiki Registries">
+    `ManageWikiExtensions.php`, `ManageWikiNamespaces.php`, and `ManageWikiSettings.php` are loaded. These files define the `$wmgManageWikiExtensions`, namespace settings, and `$wmgManageWikiSettings` arrays that the ManageWiki extension reads to build its admin UI and apply per-wiki configuration.
+  </Step>
+  <Step title="Config Globals Resolution">
+    `MirahezeFunctions::getConfigGlobals()` is called. It checks for a fresh `config-{dbname}.php` opcode-cached file. On a miss, it merges the ManageWiki per-wiki cache (from `{dbname}.php` in `CACHE_DIRECTORY`) into `$wgConf->settings`, computes wiki tags (realm, MediaWiki version, active extensions, wiki states), and calls `$wgConf->getAll($wgDBname, ...)` to resolve every setting into a flat globals array. The result is written back to cache. `extract($globals)` applies the resolved settings as PHP globals.
+  </Step>
+  <Step title="Database & Cache Configuration">
+    `Database.php` configures `LBFactoryMulti` using `$wi->wikiDBClusters` to route each wiki's database name to the correct MySQL cluster (currently `c1` → `db-c1-us-east-021`). `GlobalCache.php` configures Redis as the main and message cache, sets up the `parsercache-multiwrite` parser cache (Redis primary, SQL secondary), and tunes TTLs for parser, session, and revision caches.
+  </Step>
+  <Step title="GlobalSettings & LocalWiki">
+    `GlobalSettings.php` applies farm-wide runtime settings: loading CentralAuth, GlobalPreferences, GlobalBlocking, and RemovePII; enforcing `$wgCentralAuthStrict`; and conditionally loading extension dependencies (e.g., Bootstrap for Chameleon, Elastica for CirrusSearch). `LocalWiki.php` applies per-wiki special-case overrides using a `switch ($wi->dbname)` block — for example, loading SecurePoll and RequestCustomDomain only for `metawiki`.
+  </Step>
+  <Step title="Extension Loading">
+    `$wi->loadExtensions()` reads the per-wiki enabled-extension list from the CreateWiki cache file (`{dbname}.php`), cross-references it against a pre-built extension path index (`cw_cache/{version}/extension-list.php`), and queues each enabled extension with `ExtensionRegistry`. Disabled extensions listed in `$wi::$disabledExtensions` are skipped regardless of wiki settings.
+  </Step>
+</Steps>
+
+## The Two-Realm System
+
+Every constant, database name, and domain in `MirahezeFunctions` is keyed by realm. The realm is determined at boot time from the database suffix: names ending in `wiki` belong to the `default` (production) realm; names ending in `wikibeta` belong to the `beta` realm. On the server side, realm is also confirmed by checking whether `php_uname('n')` equals the `BETA_HOSTNAME` constant (`staging11`).
+
+<CardGroup cols={2}>
+  <Card title="Production Realm" icon="server">
+    **Domains:** wikioasis.org · skywiki.org
+
+    **DB suffix:** `wiki`
+
+    **Central DB:** `metawiki`
+
+    **Global DB:** `wikidb`
+
+    **Shared domain:** `accounts.wikioasis.org`
+  </Card>
+  <Card title="Beta Realm" icon="vial">
+    **Domains:** betaoasis.xyz
+
+    **DB suffix:** `wikibeta`
+
+    **Central DB:** `metawikibeta`
+
+    **Global DB:** `wikidbbeta`
+
+    **Shared domain:** `accounts.betaoasis.xyz`
+  </Card>
+</CardGroup>
+
+## The Shared Domain
+
+The shared domain (`accounts.wikioasis.org` in production, `accounts.betaoasis.xyz` in beta) is a special hostname that hosts the CentralAuth unified login flow. When a request arrives on the shared domain, `LocalSettings.php` detects it via `$wi->getSharedDomain()` and activates several overrides.
+
+<Note>
+  The shared domain path prefix is stored in `$wmgSharedDomainPathPrefix` and set to `"/{dbname}"` — the wiki database name extracted from the request URI path. All resource URLs (`$wgLoadScript`, `$wgResourceBasePath`) are repointed to the canonical wiki server to ensure assets load correctly.
+</Note>
+
+When `$wmgSharedDomainPathPrefix` is active, the following changes take effect:
+
+- **`$wgUseSiteCss` and `$wgUseSiteJs`** are set to `false` — the shared login page uses no wiki-specific styling or scripts.
+- **`$wgCentralAuthCookieDomain`** is set to `.wikioasis.org` (or `.betaoasis.xyz`) so the authentication cookie is valid across all wikis in the realm.
+- **`$wgCookiePrefix`** is overridden to `auth` and `$wgSessionName` to `authSession` for isolation.
+- **`$wgWebAuthnNewCredsDisabled`** is set to `false`, enabling WebAuthn (passkey) credential creation exclusively on the shared domain.
+- **CheckUser** client hints collection is enabled for the authentication context.
+
+## Key File Responsibilities
+
+<CardGroup cols={2}>
+  <Card title="LocalSettings.php" icon="gear">
+    **Main bootstrap.** Loads credentials and class files, instantiates `$wi`, populates all of `$wgConf->settings` with farm and per-wiki defaults, loads ManageWiki registries, resolves config globals via `getConfigGlobals()`, and sequences the remaining includes. This file is MediaWiki's entry point into the entire farm config.
+  </Card>
+  <Card title="MirahezeFunctions.php" icon="code">
+    **Core utility class.** Defines all farm constants (`ALLOWED_DOMAINS`, `SUFFIXES`, `MEDIAWIKI_VERSIONS`, etc.), implements `SiteConfiguration` setup, database and server resolution, MediaWiki version selection, CreateWiki cache reading/writing, ManageWiki config merging, and extension loading. Every other file depends on this class.
+  </Card>
+  <Card title="GlobalSettings.php" icon="globe">
+    **Farm-wide runtime settings.** Registers `CreateWikiGenerateDatabaseLists` and `ManageWikiCore*` hooks, loads `MultiVersion.php`, enforces CentralAuth strict mode and SUL3, configures the shared domain cookie behaviour and WebAuthn, and conditionally loads extension dependencies (Bootstrap, Elastica, SocialProfile, etc.) based on which extensions are active for the current wiki.
+  </Card>
+  <Card title="GlobalExtensions.php" icon="puzzle-piece">
+    **Globally required extensions and skins.** Calls `wfLoadSkins()` and `wfLoadExtensions()` for the set of extensions that must be present on every wiki regardless of ManageWiki settings — including AbuseFilter, CentralAuth, CheckUser, CreateWiki, Echo, ManageWiki, OATHAuth, Scribunto, and the Citizen, Vector, MonoBook, and other bundled skins.
+  </Card>
+  <Card title="MultiVersion.php" icon="code-branch">
+    **Per-wiki MediaWiki version overrides.** Exposes `WikiFarmMultiVersion::getWikiVersion()` and `setWikiVersion()` for atomic reads and writes of `wikiVersions.php`. Implements `onCreateWikiPhpBuilder` to inject the `v` (version) key into the CreateWiki databases cache so `MirahezeFunctions::getMediaWikiVersion()` can pick it up without re-reading the overrides file on every request.
+  </Card>
+  <Card title="Database.php" icon="database">
+    **MySQL cluster routing.** Configures `LBFactoryMulti` with `$wi->wikiDBClusters` (sourced from the `c` column in the CreateWiki databases cache) to route each wiki to its assigned MySQL cluster. Currently a single cluster `c1` backed by `db-c1-us-east-021`. Connection parameters are drawn from `PrivateSettings.php`.
+  </Card>
+  <Card title="GlobalCache.php" icon="bolt">
+    **Redis and parser cache configuration.** Sets Redis as `$wgMainCacheType` and `$wgMessageCacheType`, configures the `parsercache-multiwrite` object cache (Redis primary with SQL as a durable fallback), and sets per-content-type TTLs: 15 days for parser cache, 10 days for DiscussionTools, 3 days for revisions, 1 day for sessions. Sidebar caching is disabled when serving via the shared domain.
+  </Card>
+  <Card title="LocalWiki.php" icon="wrench">
+    **Per-wiki special-case overrides.** Uses `switch ($wi->dbname)` to apply overrides that cannot be expressed through `$wgConf->settings` or ManageWiki. Examples: `metawiki` loads SecurePoll and RequestCustomDomain; `testwiki` loads EnhancedUpload, OOJSPlus, and Citoid with a custom service URL.
+  </Card>
+  <Card title="ManageWikiExtensions.php" icon="toggle-on">
+    **Extension registry for wiki admins.** Defines the `$wmgManageWikiExtensions` array describing every extension that wiki administrators can enable via `Special:ManageWiki/extensions`. Each entry specifies display metadata, conflicts, prerequisite extensions, permissions requirements, install/remove side-effects (namespace creation, mwscript invocations), and visibility constraints (public/private wikis only).
+  </Card>
+  <Card title="ManageWikiSettings.php" icon="sliders">
+    **Settings registry for wiki admins.** Defines the `$wmgManageWikiSettings` array describing every MediaWiki configuration variable that wiki admins can adjust via `Special:ManageWiki/settings`. Each entry declares the variable name, its source extension, type (checkbox, integer, list, matrix, etc.), override default, and any prerequisite extensions or permissions.
+  </Card>
+  <Card title="ManageWikiNamespaces.php" icon="layer-group">
+    **Namespace settings registry.** Defines additional per-namespace configuration fields exposed in `Special:ManageWiki/namespaces`. Entries can be scoped to main or talk namespaces, restricted to specific namespace IDs, and support checkbox, vestyle, integer, language, list, and other field types.
+  </Card>
+  <Card title="wikiVersions.php" icon="tag">
+    **Per-wiki MediaWiki version pins.** A simple PHP file returning an associative array of `dbname => version` overrides managed atomically by `WikiFarmMultiVersion::setWikiVersion()`. Wikis not listed here inherit the farm default for their realm. When a wiki's cache file is invalidated, this file ensures the correct MediaWiki branch is selected immediately on the next request.
+  </Card>
+</CardGroup>
+
+## SiteConfiguration and Per-Wiki Setting Resolution
+
+MediaWiki's `SiteConfiguration` class (`$wgConf`) is the central registry through which all per-wiki settings are stored and resolved. `MirahezeFunctions::setupSiteConfiguration()` instantiates it early in the bootstrap, sets `$wgConf->suffixes` and `$wgConf->wikis`, and then `LocalSettings.php` populates `$wgConf->settings` with arrays like:
+
+```php
+'wgMaxArticleSize' => [
+    'default'           => 1024 * 2,       // farm default: 2 MB
+    'projectherzlwiki'  => 1024 * 48,      // override for a specific wiki
+    'smowiki'           => 1024 * 10,
+],
+```
+
+When `MirahezeFunctions::getConfigGlobals()` later calls `$wgConf->getAll($wgDBname, $dbSuffix, $confParams, $wikiTags)`, SiteConfiguration resolves the final value for the current wiki by checking for a wiki-specific key first and falling back to `'default'`. The ManageWiki per-wiki cache is merged into `$wgConf->settings` before this resolution step, so ManageWiki settings — namespaces, permissions, extension-specific variables — all participate in the same lookup hierarchy.
+
+<Tip>
+  Because `getConfigGlobals()` caches its output as a PHP opcode-cached file (`config-{dbname}.php`), the full `$wgConf->getAll()` resolution only runs when `LocalSettings.php`, a ManageWiki registry file, or the wiki's CreateWiki cache file is newer than the config cache. In steady state, per-request overhead is just an `include` of an opcode-cached array.
+</Tip>

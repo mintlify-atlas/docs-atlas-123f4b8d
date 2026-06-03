@@ -1,0 +1,204 @@
+---
+title: "Monitoring, Error Tracking, and Observability Setup"
+sidebarTitle: "Monitoring"
+description: "Sentry SDK for error tracking and distributed tracing, DogStatsD for metrics, and the Instatus status page integration for WikiOasis infrastructure."
+---
+
+WikiOasis runs two complementary observability systems: Sentry captures errors, exceptions, and distributed traces from every PHP request, while DogStatsD ships application metrics to a StatsD-compatible endpoint. Together they provide real-time visibility into application health, slow requests, and database errors without requiring any manual instrumentation at the wiki level. A public Instatus status page at `status.wikioasis.org` surfaces ongoing incidents to end users.
+
+## Monitoring Components
+
+| Tool | Purpose | Config Location |
+|------|---------|----------------|
+| Sentry PHP SDK | Error capture, distributed tracing, profiling | `Sentry.php` |
+| Sentry Browser SDK | Client-side error capture (JS) | `Sentry.php` (injected via hook) |
+| Monolog → Sentry | Log-level routing: exceptions, DB errors | `Sentry.php` |
+| DogStatsD | Application metrics (counters, timers) | `LocalSettings.php` |
+| Instatus widget | Public status page and maintenance page | `DatabaseMaintenance.php` |
+
+## Sentry Configuration
+
+`Sentry.php` initialises the Sentry PHP SDK immediately after `PrivateSettings.php`
+is loaded, so every subsequent line of the MediaWiki bootstrap is covered by
+the active Sentry hub.
+
+```php
+\Sentry\init( [
+    'dsn'                  => $sentryDSN,
+    'environment'          => defined( 'MW_ENV' ) ? MW_ENV : 'production',
+    'release'              => $wgVersion ?? null,
+    'enable_logs'          => true,
+    'traces_sample_rate'   => 1.0,
+    'profiles_sample_rate' => 0.3,
+    'attach_stacktrace'    => true,
+    'max_breadcrumbs'      => 100,
+] );
+```
+
+<CardGroup cols={2}>
+  <Card title="100% Trace Sampling" icon="chart-line">
+    `traces_sample_rate = 1.0` — every HTTP request generates a Sentry
+    transaction. This gives complete request-level visibility but may require
+    Sentry plan capacity planning as traffic grows.
+  </Card>
+  <Card title="30% Profiling" icon="stopwatch">
+    `profiles_sample_rate = 0.3` — 30% of traced requests also capture a
+    continuous CPU profile, providing function-level performance data without
+    the overhead of profiling every request.
+  </Card>
+  <Card title="Stacktrace Attachment" icon="list">
+    `attach_stacktrace = true` — every captured message (not just exceptions)
+    includes a full PHP stack trace, making it easier to pinpoint the source of
+    informational warnings and non-fatal log entries.
+  </Card>
+  <Card title="Breadcrumb Depth" icon="breadcrumb">
+    `max_breadcrumbs = 100` — up to 100 structured breadcrumb events
+    (log entries, DB queries, HTTP calls) are retained per transaction,
+    providing rich context for post-mortem debugging.
+  </Card>
+</CardGroup>
+
+### Environment and Release
+
+- **Environment** is read from the `MW_ENV` PHP constant. If the constant is
+  not defined, it defaults to `'production'`. The beta realm (hostname
+  `staging11`) should define `MW_ENV=staging` to keep staging events in a
+  separate Sentry environment.
+- **Release** is set to `$wgVersion`, so every MediaWiki version upgrade
+  automatically creates a new Sentry release, enabling regression tracking
+  across deployments.
+
+<Tip>
+  When running MediaWiki on the staging server, set `define('MW_ENV', 'staging')`
+  before including `Sentry.php`. This routes all errors and traces to the
+  `staging` environment in Sentry, preventing test noise from contaminating
+  production dashboards and alerts.
+</Tip>
+
+## Monolog Integration
+
+All standard MediaWiki log channels are routed through a Monolog SPI that
+sends records to Sentry via two dedicated handlers plus a stderr stream:
+
+| Handler | Class | Minimum Level |
+|---------|-------|--------------|
+| `sentry-logs` | `Sentry\Monolog\LogsHandler` | `INFO` |
+| `sentry-crumbs` | `Sentry\Monolog\BreadcrumbHandler` | `DEBUG` |
+| `stderr` | `Monolog\Handler\StreamHandler` | `DEBUG` |
+
+The following loggers are explicitly configured to use all three handlers:
+
+<Accordion title="exception — PHP exceptions and Throwables">
+  Captures every PHP exception that passes through MediaWiki's logging
+  infrastructure. Works in tandem with the `LogException` hook for exceptions
+  raised during page rendering.
+</Accordion>
+
+<Accordion title="error — PHP errors and warnings">
+  Captures PHP-level errors (warnings, notices) that MediaWiki converts into
+  log entries. The `attach_stacktrace` setting ensures these arrive in Sentry
+  with full call-stack context.
+</Accordion>
+
+<Accordion title="DBError — database errors">
+  Routes all MediaWiki database-layer errors (connection failures, query errors,
+  deadlocks) to Sentry. These are also written to `php://stderr` via the
+  `stderr` handler, making them visible in server logs.
+</Accordion>
+
+<Accordion title="@default — catch-all logger">
+  Any log channel not explicitly named in the Monolog config falls through to
+  `@default`, which routes to the same three handlers. This ensures no log
+  record is silently dropped.
+</Accordion>
+
+## HTTP Transaction Tracking
+
+For non-CLI requests, `Sentry.php` creates a `TransactionContext` that records
+the HTTP method and URI path (query string stripped) as the transaction name:
+
+```php
+$sentryTxCtx = new \Sentry\Tracing\TransactionContext();
+$sentryTxCtx->setName(
+    ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) . ' ' .
+    strtok( $_SERVER['REQUEST_URI'] ?? '/', '?' )
+);
+$sentryTxCtx->setOp( 'http.server' );
+$sentryTx = \Sentry\startTransaction( $sentryTxCtx );
+```
+
+A PHP shutdown function finishes the transaction, sets the HTTP response code,
+and flushes the Sentry SDK — ensuring traces are captured even when execution
+terminates via `die()` or a fatal error.
+
+## MediaWiki Hook Integrations
+
+<CardGroup cols={3}>
+  <Card title="LogException Hook" icon="bug">
+    Captures any `Throwable` that MediaWiki logs and is **not** suppressed
+    (`$suppressed === false`). Suppressed exceptions (e.g. expected 404s) are
+    intentionally excluded to reduce noise.
+  </Card>
+  <Card title="UserGetRights Hook" icon="user">
+    Sets Sentry user context (`id` and `username`) for every authenticated
+    request. This allows Sentry issues to be filtered and searched by affected
+    user account.
+  </Card>
+  <Card title="BeforePageDisplay Hook" icon="code">
+    Injects the Sentry Browser SDK `<script>` tag into every page's `<head>`,
+    enabling client-side JavaScript error capture and session replays in
+    addition to the server-side PHP integration.
+  </Card>
+</CardGroup>
+
+### Fatal Error Capture
+
+Both web and CLI shutdown functions call `error_get_last()` and send any
+fatal-class error (`E_ERROR`, `E_PARSE`, `E_CORE_ERROR`, `E_COMPILE_ERROR`)
+to Sentry as a `fatal`-severity message before flushing the SDK:
+
+```php
+register_shutdown_function( static function () use ( $sentryTx ) {
+    $error = error_get_last();
+    if ( $error && in_array( $error['type'], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR ], true ) ) {
+        \Sentry\captureMessage( $error['message'], \Sentry\Severity::fatal() );
+    }
+    $sentryTx->finish();
+    \Sentry\flush();
+} );
+```
+
+## DogStatsD Metrics
+
+Application-level counters, timers, and gauges are emitted in DogStatsD format
+via UDP:
+
+```php
+$wgStatsFormat  = 'dogstatsd';
+$wgStatsTarget  = 'udp://monitoring-us-east-021.ovvin.wonet:9125';
+$wgWMEStatsdBaseUri = 'udp://monitoring-us-east-021.ovvin.wonet:9125';
+```
+
+Both `$wgStatsTarget` (MediaWiki core stats) and `$wgWMEStatsdBaseUri`
+(WikimediaEvents extension) point to the same endpoint on
+`monitoring-us-east-021.ovvin.wonet`. The DogStatsD format adds tag support
+on top of plain StatsD, enabling per-wiki and per-cluster metric filtering in
+any compatible metrics backend (e.g. Datadog, VictoriaMetrics, Grafana).
+
+## Status Page and Maintenance Mode
+
+The public status page at **https://status.wikioasis.org/** is powered by
+Instatus and is the canonical source of truth for ongoing incidents and
+scheduled maintenance windows.
+
+During database maintenance, `DatabaseMaintenance.php` serves an HTTP 503
+response with links to the status page and the WikiOasis Discord server. An
+Instatus status widget is embedded directly in the maintenance page so users
+can check current incident status without navigating away.
+
+<Note>
+  The `readOnlyBySection` entries in `Database.php` and the 503 maintenance
+  page in `DatabaseMaintenance.php` are complementary mechanisms. Read-only
+  mode allows reads to continue while blocking writes; the 503 page is used
+  when the cluster must be taken fully offline (e.g. for schema migrations).
+</Note>

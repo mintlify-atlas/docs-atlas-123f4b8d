@@ -1,0 +1,199 @@
+---
+title: "Global Extensions & Skins Across the WikiOasis Farm"
+sidebarTitle: "Global Extensions"
+description: "A complete reference to the extensions and skins loaded farm-wide on every WikiOasis wiki, including conditional and per-wiki special cases."
+---
+
+Every wiki hosted on WikiOasis shares a common foundation of MediaWiki extensions and skins that are loaded unconditionally at boot time via `GlobalExtensions.php`. These are registered with `wfLoadExtensions()` and `wfLoadSkins()` before any per-wiki configuration is applied, which means they are always present regardless of what individual wiki administrators configure through ManageWiki. This layer provides the farm's core identity — shared authentication, anti-abuse tooling, wiki management infrastructure, and a baseline set of editing tools — and cannot be toggled off by wiki administrators on any individual wiki.
+
+<Note>
+  Globally loaded extensions and skins are managed exclusively by WikiOasis
+  platform administrators. Wiki administrators cannot disable or remove them
+  through Special:ManageWiki or any other interface.
+</Note>
+
+## Globally Loaded Skins
+
+Six skins are loaded farm-wide via `wfLoadSkins()` in `GlobalExtensions.php` and are available as user-selectable preferences on every wiki:
+
+<CardGroup cols={3}>
+  <Card title="Citizen" icon="palette">
+    A modern, clean skin designed for readability and mobile-first experiences.
+  </Card>
+  <Card title="CologneBlue" icon="palette">
+    A classic MediaWiki skin with a blue-toned, traditional layout.
+  </Card>
+  <Card title="Modern" icon="palette">
+    A refreshed layout skin that modernises the classic MediaWiki look and feel.
+  </Card>
+  <Card title="MonoBook" icon="palette">
+    The long-standing default Wikipedia skin; clean, minimal, and widely familiar.
+  </Card>
+  <Card title="Timeless" icon="palette">
+    A responsive skin that adapts gracefully to both desktop and mobile widths.
+  </Card>
+  <Card title="Vector" icon="palette">
+    MediaWiki's flagship default skin, used across Wikimedia projects globally.
+  </Card>
+</CardGroup>
+
+## Active Globally Loaded Extensions
+
+The following extensions are registered with `wfLoadExtensions()` in `GlobalExtensions.php` and are active on every wiki in the farm:
+
+<CardGroup cols={2}>
+  <Card title="Anti-Spam & Abuse Prevention" icon="shield-halved">
+    **AbuseFilter** — Rule-based automated abuse detection and filtering.  
+    **AntiSpoof** — Blocks account creation with confusable or spoofed usernames.  
+    **ConfirmEdit** — Core CAPTCHA framework for form and edit protection.  
+    **SpamBlacklist** — URL and content blacklisting to block known spam links.  
+    **TitleBlacklist** — Prevents creation of pages whose titles match a blocklist.  
+    **TorBlock** — Automatically blocks edits originating from Tor exit nodes.
+  </Card>
+  <Card title="Authentication & Security" icon="lock">
+    **CentralAuth** — Cross-wiki unified login via a global user account system.  
+    **CheckUser** — Allows authorised users to look up IP addresses behind accounts.  
+    **OATHAuth** — Two-factor authentication support (TOTP and HOTP).  
+    **OAuth** — OAuth 1.0a/2.0 provider for third-party application authorisation.  
+    **LoginNotify** — Notifies users of new login events on their account.  
+    **MediaModeration** — Scans uploaded media against abuse databases.
+  </Card>
+  <Card title="Wiki Farm Management" icon="server">
+    **CreateWiki** — Core extension for requesting and provisioning new wikis.  
+    **ManageWiki** — Per-wiki settings, extensions, and permissions management.  
+    **DataDump** — Provides wiki administrators with on-demand XML/ZIP dumps.  
+    **ImportDump** — Allows importing XML dumps into a wiki.  
+    **RemovePII** — GDPR-compliant user data removal tooling.  
+    **WikiOasisMagic** — WikiOasis-specific farm customisations and magic variables.
+  </Card>
+  <Card title="Notifications & Communication" icon="bell">
+    **Echo** — Centralised on-wiki notification system.  
+    **CentralNotice** — Farm-wide banner notification system.  
+    **DiscordNotifications** — Posts wiki activity events to a Discord webhook.  
+    **DismissableSiteNotice** — Allows users to dismiss the site notice banner.  
+    **GlobalBlocking** — Cross-wiki IP and account blocking infrastructure.
+  </Card>
+  <Card title="Content & Editing" icon="pen-to-square">
+    **WikiEditor** — Enhanced wikitext editing toolbar.  
+    **ParserFunctions** — Core template logic functions (`#if`, `#switch`, etc.).  
+    **Scribunto** — Lua scripting engine for complex template modules.  
+    **ParserMigration** — Assists with migration between parser versions.  
+    **BetaFeatures** — Infrastructure for opt-in beta feature experimentation.  
+    **CFCachePurge** — Purges Cloudflare cache on page edits.
+  </Card>
+  <Card title="Cross-Wiki & Discovery" icon="globe">
+    **GlobalCssJs** — Allows global CSS/JS to apply across all wikis.  
+    **GlobalPreferences** — Synchronises user preferences across the farm.  
+    **InterwikiDispatcher** — Routes interwiki links to the correct wiki.  
+    **WikiDiscover** — Public directory of wikis hosted on the farm.  
+    **QuickInstantCommons** — Fast media embedding from Wikimedia Commons.  
+    **EventLogging** — Event instrumentation and analytics pipeline.
+  </Card>
+  <Card title="Infrastructure & Utilities" icon="gear">
+    **AWS** — Amazon S3 file storage backend for wiki media.  
+    **CookieWarning** — Displays a GDPR cookie consent notice to visitors.  
+    **Nuke** — Batch page deletion tool for administrators.  
+    **OOJSPlus** — OOJS/UI component library extensions.  
+    **cldr** — Common Locale Data Repository for localisation data.  
+    **ConfirmEdit/hCaptcha** — hCaptcha sub-extension for bot protection.
+  </Card>
+</CardGroup>
+
+## Extensions Loaded via File Path
+
+Several extensions or extension sub-components cannot be loaded through `wfLoadExtensions()` and are instead registered directly via file paths listed in the `extension-list` file:
+
+<CardGroup cols={1}>
+  <Card title="ConfirmEdit / hCaptcha" icon="robot">
+    The hCaptcha sub-extension of ConfirmEdit is loaded via its own `extension.json` at `$IP/extensions/ConfirmEdit/hCaptcha/extension.json`. This provides the hCaptcha challenge type used farm-wide for registration and edit protection forms.
+  </Card>
+  <Card title="Maps (ParserHooks Vendor)" icon="map">
+    The Maps extension's ParserHooks dependency is loaded from the vendor path at `$IP/extensions/Maps/vendor/mediawiki/parser-hooks/ParserHooks.php`. This provides the hook system that Maps relies on for its parser functions.
+  </Card>
+  <Card title="SocialProfile Suite" icon="users">
+    The SocialProfile framework is split into discrete sub-extensions, each loaded from their own `extension.json` files:
+    - **SystemGifts** — System-awarded achievement gifts.
+    - **UserActivity** — Recent activity feeds for user profiles.
+    - **UserBoard** — User-to-user message boards.
+    - **UserGifts** — User-gifting system.
+    - **UserRelationship** — Friend and foe relationship management.
+    - **UserStats** — User contribution scoring and statistics.
+    - **UserWelcome** — Automatic welcome messages for new users.
+  </Card>
+  <Card title="Wikibase" icon="database">
+    Both the Wikibase Client and Repository are loaded via their own entry points:
+    - `$IP/extensions/Wikibase/extension-client.json`
+    - `$IP/extensions/Wikibase/extension-repo.json`
+
+    These are loaded at the file-path level to support conditional activation; actual availability depends on per-wiki configuration (see Conditional Loading below).
+  </Card>
+</CardGroup>
+
+## Conditional Extension Loading
+
+Several extensions in `GlobalSettings.php` are only loaded when specific conditions are met for a given wiki. This allows farm-wide support for powerful features without the overhead of loading them everywhere:
+
+<CardGroup cols={2}>
+  <Card title="Bootstrap (Chameleon skin)" icon="layer-group">
+    The Bootstrap extension is loaded automatically whenever the **Chameleon** skin is active on a wiki (`$wi->isExtensionActive('chameleon')`). It provides the CSS/JS Bootstrap framework that Chameleon depends on.
+  </Card>
+  <Card title="Elastica + CirrusSearch" icon="magnifying-glass">
+    When a wiki has **CirrusSearch** enabled, `Elastica` is loaded and `$wgSearchType` is set to `'CirrusSearch'`, pointing to the farm's OpenSearch cluster (`opensearch-us-east-011.ovvin.wonet`, `opensearch-us-east-012.ovvin.wonet`). If **RelatedArticles** is also active, it is configured to use CirrusSearch.
+  </Card>
+  <Card title="SocialProfile (PHP bootstrap)" icon="user-group">
+    When a wiki has **SocialProfile** enabled, its PHP bootstrap file (`SocialProfile.php`) is included and the `$wgSocialProfileFileBackend` is set to `'AmazonS3'` for media storage on the farm's S3 backend.
+  </Card>
+  <Card title="UserProfileV2" icon="id-card">
+    When **UserProfileV2** is active, the backend is configured to use Amazon S3 and profile images are served via `https://cdn.wikioasis.org/{$wgDBname}`.
+  </Card>
+  <Card title="JsonConfig" icon="brackets-curly">
+    When **JsonConfig** is active, the `Map.JsonConfig` and `Tabular.JsonConfig` namespaces (namespace 486, `Data`) are configured and connected to `commons.miraheze.org` as a remote source for `.map` and `.tab` data pages.
+  </Card>
+  <Card title="Wikibase" icon="database">
+    When either **WikibaseClient** or **WikibaseRepository** is active, the Wikibase configuration file (`$IP/config/Wikibase.php`) is included to apply per-wiki Wikibase settings.
+  </Card>
+  <Card title="OOJSPlus (StandardDialogs/EnhancedUpload)" icon="window-restore">
+    OOJSPlus is loaded automatically when either **StandardDialogs** or **EnhancedUpload** is active, providing the OOJS/UI component library those extensions depend on.
+  </Card>
+</CardGroup>
+
+## Per-Wiki Special Cases
+
+A small number of production wikis require extensions that cannot be loaded through ManageWiki and are instead hardcoded in `LocalWiki.php`:
+
+<CardGroup cols={2}>
+  <Card title="metawiki" icon="star">
+    The meta wiki (`meta.wikioasis.org`) loads two additional extensions:
+    - **SecurePoll** — Secure voting and election system for steward elections and other polls.
+    - **RequestCustomDomain** — Allows wiki owners to request a custom domain for their wiki.
+  </Card>
+  <Card title="testwiki" icon="flask">
+    The test wiki (`test.wikioasis.org`) loads three additional extensions:
+    - **EnhancedUpload** — Provides an enhanced file upload interface integrated with VisualEditor.
+    - **OOJSPlus** — Loaded explicitly alongside EnhancedUpload.
+    - **Citoid** — Automatic citation generation, configured to use the Wikipedia citation service at `https://en.wikipedia.org/api/rest_v1/data/citation`.
+  </Card>
+</CardGroup>
+
+## Disabled (Commented-Out) Extensions
+
+The following extensions appear in `GlobalExtensions.php` as commented-out entries. They are present in the codebase but not active:
+
+| Extension | Notes |
+|---|---|
+| Cloudflare | Replaced by CFCachePurge for cache purging |
+| EventBus | Event stream bus; not currently deployed |
+| EventStreamConfig | Companion to EventBus |
+| GTag | Google Analytics tag; not in use |
+| GlobalNewFiles | Cross-wiki new files special page |
+| Interwiki | Replaced by InterwikiDispatcher |
+| IPInfo | IP geolocation UI for CheckUser; not deployed |
+| MatomoAnalytics | Matomo analytics integration |
+| MobileDetect | Mobile device detection library |
+| MultiPurge | Multi-CDN cache purging |
+| NativeSvgHandler | SVG rendering without rasterisation |
+| ReportIncident | User abuse incident reporting |
+| RottenLinks | Dead link detection; disabled due to performance |
+| SecureLinkFixer | Upgrades HTTP links to HTTPS |
+| StopForumSpam | StopForumSpam.com blocklist integration |
+| WebAuthn | Hardware security key authentication |

@@ -1,0 +1,179 @@
+---
+title: "Caching Strategy and Cache Layer Configuration Guide"
+sidebarTitle: "Caching"
+description: "Redis-backed caching for WikiOasis: parser cache TTLs, job queue, Parsoid, language converter, sidebar, and MirahezeFunctions cache internals."
+---
+
+WikiOasis uses Redis as the primary object cache and message cache backend for every wiki in the farm. A `MultiWriteBagOStuff` wrapper provides a dual-write path for the parser cache so that entries land in Redis first (fast, memory-bounded) with an optional SQL fallback for durability. Several auxiliary systems — the job queue, Parsoid stash, and ManageWiki task servers — also depend on the same Redis infrastructure, making cache reliability a first-order operational concern.
+
+## Cache Backends
+
+<CardGroup cols={2}>
+  <Card title="Main Cache" icon="server">
+    `$wgMainCacheType = 'redis'` — all general-purpose object cache reads and
+    writes go to Redis. This includes session tokens, API query caches, and
+    anything stored via `ObjectCache::getMainWANInstance()`.
+  </Card>
+  <Card title="Message Cache" icon="message">
+    `$wgMessageCacheType = 'redis'` — interface messages (MediaWiki namespace)
+    are cached in Redis. Combined with `$wgUseLocalMessageCache = true`, a
+    per-wiki in-process copy is kept to avoid Redis round-trips on hot paths.
+  </Card>
+  <Card title="Language Converter" icon="language">
+    `$wgLanguageConverterCacheType = CACHE_ACCEL` — uses APCu for ultra-fast
+    in-process storage. Automatically falls back to `CACHE_NONE` in CLI mode
+    where APCu is not available.
+  </Card>
+  <Card title="Cache Directory" icon="folder">
+    `$wgCacheDirectory = /srv/mediawiki/cache/{$wgDBname}` — per-wiki on-disk
+    directory used for localisation cache files and other serialised data that
+    benefits from persistent filesystem storage.
+  </Card>
+</CardGroup>
+
+## Parser Cache
+
+The parser cache uses a `MultiWriteBagOStuff` object registered as
+`parsercache-multiwrite`. Writes go to Redis using volatile-LRU eviction,
+ensuring that under memory pressure Redis automatically removes older parsed
+output while the full TTL is still served from the backing store.
+
+```php
+$wgObjectCaches['parsercache-multiwrite'] = [
+    'class' => MultiWriteBagOStuff::class,
+    'caches' => [
+        0 => $wgObjectCaches['redis'],  // primary: Redis (volatile-lru)
+        // 1 => SqlBagOStuff on pc1     // optional SQL fallback (currently disabled)
+    ],
+];
+$wgParserCacheType = 'parsercache-multiwrite';
+```
+
+<Note>
+  The SQL backend (`SqlBagOStuff` on the `pc1` cluster with
+  `dbname=parsercache`) is defined in the source but currently commented out.
+  When enabled, both Redis and SQL receive every write, and reads check Redis
+  first before falling back to SQL — providing durability across Redis restarts.
+</Note>
+
+## Cache TTL Reference
+
+| Cache | TTL | Setting |
+|-------|-----|---------|
+| Parser cache | **15 days** | `$wgParserCacheExpireTime = 86400 * 15` |
+| DiscussionTools talk-page parser cache | **10 days** | `$wgDiscussionToolsTalkPageParserCacheExpiry = 86400 * 10` |
+| Revision cache | **3 days** | `$wgRevisionCacheExpiry = 86400 * 3` |
+| Session | **1 day** (86 400 s) | `$wgObjectCacheSessionExpiry = 86400` |
+| DLP max cache | **7 days** | `$wgDLPMaxCacheTime = 604800` |
+| DLP query cache | **120 seconds** | `$wgDLPQueryCacheTime = 120` |
+| Search suggest | **3 hours** (10 800 s) | `$wgSearchSuggestCacheExpiry = 10800` |
+
+`$wgQueryCacheLimit = 5000` caps the number of rows stored by special-page
+query caches such as `Special:MostLinked`.
+
+## Configuration Cache Invalidation
+
+<Warning>
+  `$wgInvalidateCacheOnLocalSettingsChange = false` — MediaWiki's built-in
+  behaviour of auto-purging the object cache when `LocalSettings.php` changes
+  is **disabled**. After deploying any configuration change, operators must
+  purge affected caches manually (e.g. via `php maintenance/rebuildLocalisationCache.php`
+  or by restarting the cache process). Failing to do so may cause stale config
+  to be served until TTL expiry.
+</Warning>
+
+Additional cache-related settings:
+
+<Accordion title="$wgUseLocalMessageCache = true">
+  Each PHP worker maintains an in-process copy of the message cache for the
+  current wiki. This eliminates Redis round-trips for every interface string
+  lookup, at the cost of a small amount of PHP memory per worker.
+</Accordion>
+
+<Accordion title="$wgResourceLoaderUseObjectCacheForDeps = true">
+  ResourceLoader dependency manifests are stored in the object cache (Redis)
+  rather than recomputed on every request. This significantly reduces startup
+  overhead for JavaScript/CSS bundle delivery.
+</Accordion>
+
+<Accordion title="$wgUseGzip = true">
+  Parsed HTML stored in the parser cache is gzip-compressed before being
+  written to the cache backend. Decompression happens on the way out. This
+  trades a small amount of CPU for substantially reduced Redis memory usage on
+  large wikis.
+</Accordion>
+
+<Accordion title="Sidebar cache">
+  `$wgEnableSidebarCache = true` is set for all wikis **except** those served
+  via the shared domain (e.g. `accounts.wikioasis.org`). On shared-domain
+  requests `$wmgSharedDomainPathPrefix` is non-empty, so sidebar caching is
+  skipped to avoid cross-wiki cache poisoning.
+</Accordion>
+
+## Parsoid Cache
+
+```php
+$wgParsoidCacheConfig = [
+    'StashType'           => null,
+    'StashDuration'       => 24 * 60 * 60,  // 24 hours
+    'CacheThresholdTime'  => 0.0,            // cache all pages
+    'WarmParsoidParserCache' => true,
+];
+```
+
+`WarmParsoidParserCache = true` causes MediaWiki to proactively prime the
+Parsoid parser cache on page saves, reducing cold-cache latency for the first
+reader after an edit. Stashed Parsoid output expires after 24 hours.
+
+## Job Queue
+
+The default job type is routed through a Redis-backed `JobQueueRedis` instance
+running in daemonized mode:
+
+```php
+$wgJobTypeConf['default'] = [
+    'class'       => 'JobQueueRedis',
+    'redisServer' => 'redis-us-east-021.ovvin.wonet:6379',
+    'redisConfig' => [],
+    'daemonized'  => true,
+];
+```
+
+`daemonized = true` means jobs are consumed by a persistent `runJobs.php`
+daemon rather than being triggered inline on web requests, keeping page
+response times independent of job queue depth.
+
+## ManageWiki Task Servers
+
+ManageWiki propagates configuration changes (extension toggles, namespace
+settings, permission changes) to a list of MediaWiki application servers via
+internal HTTP requests. The active task server list is:
+
+| Server | Purpose |
+|--------|---------|
+| `task-us-east-011.ovvin.wonet:80` | Dedicated task server for async propagation |
+| `mw-us-east-021.ovvin.wonet:80` | Application server 021 |
+| `mw-us-east-022.ovvin.wonet:80` | Application server 022 |
+
+## MirahezeFunctions Cache API
+
+`MirahezeFunctions` provides two static methods that manage the on-disk PHP
+config cache in `/srv/mediawiki/cw_cache/`.
+
+<ParamField path="writeToCache" type="static method">
+  `writeToCache(string $cacheShard, array $configObject): void`
+
+  Atomically writes a serialised PHP array (produced by `StaticArrayWriter`) to
+  the cache directory. Uses `tempnam` + `rename` to avoid partial writes, then
+  calls `opcache_invalidate` so PHP's opcode cache immediately reflects the new
+  file. Called after ManageWiki commits a configuration change.
+</ParamField>
+
+<ParamField path="readFromCache" type="static method">
+  `readFromCache(string $confCacheFile, string $type, int $confActualMtime): ?array`
+
+  Reads a previously written cache shard. Validates that the stored `mtime`
+  matches the current source file's modification time; returns `null` on a
+  mismatch so the caller falls back to a live database read and then re-warms
+  the cache.
+</ParamField>

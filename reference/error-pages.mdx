@@ -1,0 +1,164 @@
+---
+title: "Farm Error & Maintenance Pages — WikiOasis Reference"
+sidebarTitle: "Error Pages"
+description: "Reference for the four error and maintenance pages served by the WikiOasis farm: MissingWiki, DeletedWiki, DatabaseMaintenance, and MissingSkyWiki."
+---
+
+The WikiOasis farm intercepts abnormal wiki states before MediaWiki ever boots and serves hand-crafted HTML error pages instead. These are plain PHP files that emit HTTP status codes, set cache headers, and output a styled full-page response — completely independent of MediaWiki's skin or i18n system. Four pages cover the full spectrum of error conditions: a wiki that was never created, a wiki that has been deleted, a cluster undergoing maintenance, and a SkyWiki subdomain that hasn't yet been migrated. Each page shares the same animated dark background aesthetic and WikiOasis (or SkyWiki) branding, giving users a consistent experience regardless of why a request failed.
+
+## Overview
+
+| File | HTTP Status | When Triggered | Cache |
+|---|---|---|---|
+| `MissingWiki.php` | **410 Gone** | Wiki DB name not found in CreateWiki registry | `s-maxage=2678400` (31 days) |
+| `DeletedWiki.php` | **410 Gone** | Wiki is marked as deleted in `cw_wikis` | `s-maxage=2678400` (31 days) |
+| `DatabaseMaintenance.php` | **503 Service Unavailable** | Wiki's DB cluster is listed in `$wgDatabaseClustersMaintenance` | `s-maxage=2678400` (31 days) |
+| `MissingSkyWiki.php` | **410 Gone** | `*.skywiki.org` subdomain not yet migrated to WikiOasis | `s-maxage=2678400` (31 days) |
+
+<Note>
+  All four pages set `Cache-Control: s-maxage=2678400, max-age=2678400`, giving both CDN edges and browsers a 31-day cache window. A change to one of these files will not reach all visitors until their cached copy expires or is explicitly purged at the CDN.
+</Note>
+
+---
+
+## MissingWiki.php
+
+Served when `MirahezeFunctions::isMissing()` returns `true` — that is, when the requested hostname resolves to a DB name that does not appear in `$wgConf->wikis`. This can happen when: a user mistypes a subdomain, a wiki was requested that was never created, or the CreateWiki cache is stale.
+
+<CardGroup cols={2}>
+  <Card title="HTTP Status" icon="circle-exclamation">
+    **410 Gone** — signals to search engines and clients that this resource is permanently unavailable at this URL.
+  </Card>
+  <Card title="Cache TTL" icon="clock">
+    **31 days** — `s-maxage=2678400`. CDN and browser caches hold this response for up to a month.
+  </Card>
+</CardGroup>
+
+**User-facing message:**
+> We couldn't find this wiki, double check that you've typed the URL correctly.
+
+**Buttons:** Go home (`https://meta.wikioasis.org/`) · Discord (`https://discord.gg/GrrTcsVC2x`)
+
+**Branding:** WikiOasis logo from `cdn.wikioasis.org/metawiki/3/38/WikiOasis_Logo.png`
+
+### Cache Sync Behaviour
+
+After serving the 410 page, `MissingWiki.php` attempts to trigger a CreateWiki cache sync:
+
+```php
+MediaWikiServices::allowGlobalInstance();
+$dataStore = MediaWikiServices::getInstance()->get( 'CreateWikiDataStore' );
+$dataStore->syncCache();
+```
+
+This means that if a wiki genuinely exists but its databases cache is stale, the next request after the sync completes will serve the wiki correctly. The sync call is wrapped in a `try/catch` so any failure is silently swallowed and the 410 page is still returned.
+
+<Tip>
+  If a newly created wiki is showing the "Wiki Missing" page, the CreateWiki cache sync triggered on the first 410 response usually resolves it within one or two retries.
+</Tip>
+
+---
+
+## DeletedWiki.php
+
+Served when a wiki's DB cluster is identified but the wiki's `wiki_deleted` flag is set to `1` in the `cw_wikis` table. Unlike a missing wiki, a deleted wiki is known to the farm — it simply should no longer be accessible.
+
+<CardGroup cols={2}>
+  <Card title="HTTP Status" icon="trash">
+    **410 Gone** — the wiki existed but has been permanently removed.
+  </Card>
+  <Card title="Cache TTL" icon="clock">
+    **31 days** — `s-maxage=2678400`.
+  </Card>
+</CardGroup>
+
+**User-facing message:**
+> This wiki has been marked as deleted.
+
+**Buttons:** Go home (`https://meta.wikioasis.org/`) · Discord (`https://discord.gg/GrrTcsVC2x`)
+
+**Branding:** WikiOasis logo from `cdn.wikioasis.org/metawiki/3/38/WikiOasis_Logo.png`
+
+<Note>
+  Unlike `MissingWiki.php`, `DeletedWiki.php` does **not** trigger a CreateWiki cache sync. Deleted wikis are intentionally kept inaccessible, so no cache correction is attempted.
+</Note>
+
+---
+
+## DatabaseMaintenance.php
+
+Served automatically when `readDbListFile()` detects that the current wiki's DB cluster is present in `$wgDatabaseClustersMaintenance`. This global is set by operations staff prior to a maintenance window. The page returns HTTP **503** and includes an Instatus widget for live status updates.
+
+<CardGroup cols={2}>
+  <Card title="HTTP Status" icon="wrench">
+    **503 Service Unavailable** — signals that the service is temporarily down, not permanently gone.
+  </Card>
+  <Card title="Status Widget" icon="signal">
+    Embeds the Instatus status widget pointing at `status.wikioasis.org` for live incident updates.
+  </Card>
+</CardGroup>
+
+**User-facing message:**
+> This wiki is currently undergoing database maintenance.
+
+**Buttons:** Status page (`https://status.wikioasis.org/`) · Discord (`https://discord.gg/GrrTcsVC2x`)
+
+**Branding:** WikiOasis logo from `cdn.wikioasis.org/metawiki/3/38/WikiOasis_Logo.png`
+
+**Instatus widget script:**
+```html
+<script src="https://api.dashboard.instatus.com/widget?host=status.wikioasis.org&code=3a58baa4&locale=en"></script>
+```
+
+### How It Is Triggered
+
+`DatabaseMaintenance.php` is not directly included by `LocalSettings.php`. Instead, `readDbListFile()` checks `$wgDatabaseClustersMaintenance` while iterating over the databases array and calls:
+
+```php
+require_once self::CONFIG_DIRECTORY . '/DatabaseMaintenance.php';
+```
+
+when the current wiki's cluster (`$data['c']`) matches a cluster listed in that global. The `require_once` terminates execution immediately because the file ends with `die(1)`.
+
+<Tip>
+  To put a cluster into maintenance mode, set `$wgDatabaseClustersMaintenance = ['db1']` (replacing `db1` with the actual cluster name) in `PrivateSettings.php` or equivalent. Remove the variable when maintenance is complete to restore access. The 503 page's 31-day CDN cache TTL does **not** matter here — 503 responses are typically not cached by CDNs.
+</Tip>
+
+---
+
+## MissingSkyWiki.php
+
+Served for `*.skywiki.org` subdomains that do not correspond to a wiki that has been migrated to WikiOasis. SkyWiki was a predecessor platform; its wikis are progressively migrated to the WikiOasis infrastructure. This page distinguishes an unmigrated SkyWiki from a generic missing wiki and provides a migration contact path.
+
+<CardGroup cols={2}>
+  <Card title="HTTP Status" icon="circle-exclamation">
+    **410 Gone** — the SkyWiki subdomain is not available on WikiOasis.
+  </Card>
+  <Card title="Cache TTL" icon="clock">
+    **31 days** — `s-maxage=2678400`.
+  </Card>
+</CardGroup>
+
+**User-facing message:**
+> This SkyWiki wiki has not yet been migrated to WikiOasis, or is missing. The bureaucrats of this wiki can request a wiki migration by emailing stewards@wikioasis.org.
+
+**Buttons:** Go home (`https://meta.wikioasis.org/`) · Discord (`https://discord.gg/GrrTcsVC2x`)
+
+**Branding:** SkyWiki logo from `cdn.wikioasis.org/skywikiwiki/9/99/SkyWiki_logo.svg`
+
+### Migration Path
+
+<Steps>
+  <Step title="Identify the wiki">
+    A bureaucrat of the SkyWiki wiki sees the 410 page and notes the subdomain URL.
+  </Step>
+  <Step title="Contact WikiOasis stewards">
+    The bureaucrat emails `stewards@wikioasis.org` with the SkyWiki URL and requests a migration.
+  </Step>
+  <Step title="Stewards perform migration">
+    WikiOasis stewards create the wiki in CreateWiki, import content, and configure the `skywiki.org` subdomain as a custom domain or redirect.
+  </Step>
+  <Step title="Page no longer served">
+    Once the wiki is registered in the CreateWiki database and the cache is updated, the subdomain resolves normally and the 410 page is no longer shown.
+  </Step>
+</Steps>

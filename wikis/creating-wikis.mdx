@@ -1,0 +1,116 @@
+---
+title: "How to Request and Create a Wiki on WikiOasis Farm"
+sidebarTitle: "Creating Wikis"
+description: "Learn how to request, name, and provision a new wiki on WikiOasis — from Special:RequestWiki through cache registration and first live request."
+---
+
+Every wiki on WikiOasis begins life as a formal request. The CreateWiki extension powers this workflow end-to-end: a user submits **Special:RequestWiki** on [meta.wikioasis.org](https://meta.wikioasis.org), a steward or global-sysop reviews the request against the Content Policy, and — on approval — CreateWiki provisions the database, writes initial SQL tables, and registers the new wiki in the `cw_cache/databases.php` cache file that `MirahezeFunctions` reads on every web request. From that moment forward, any HTTP request targeting the new subdomain is routed correctly without any server-side deployment step.
+
+## Database Naming Convention
+
+WikiOasis uses a strict suffix-based naming scheme so the farm can determine a wiki's realm purely from its database name.
+
+<CardGroup cols={2}>
+  <Card title="Production wikis" icon="globe">
+    Database name: `{name}wiki`
+
+    Served on `{name}.wikioasis.org` and `{name}.skywiki.org`
+  </Card>
+  <Card title="Beta realm wikis" icon="flask">
+    Database name: `{name}wikibeta`
+
+    Served on `{name}.betaoasis.xyz`
+  </Card>
+</CardGroup>
+
+The two suffix keys are defined in `MirahezeFunctions::SUFFIXES`:
+
+```php
+public const SUFFIXES = [
+    'wiki'     => ['wikioasis.org', 'skywiki.org'],
+    'wikibeta' => ['betaoasis.xyz'],
+];
+```
+
+`MirahezeFunctions::getCurrentDatabase()` resolves an incoming hostname to its database name by stripping the known domain and appending the matching suffix. If the resolved suffix does not match the expected realm for the current server, the request is intercepted before MediaWiki fully loads.
+
+## CreateWiki Configuration
+
+The following settings from `LocalSettings.php` govern how wiki requests are processed on WikiOasis:
+
+<CardGroup cols={2}>
+  <Card title="Subdomain root" icon="link">
+    `wgCreateWikiSubdomain` is set to `wikioasis.org`, making that the canonical subdomain namespace for all new wikis.
+  </Card>
+  <Card title="Database suffix" icon="database">
+    `wgCreateWikiDatabaseSuffix` is `wiki`, so every provisioned database is appended with `wiki` automatically.
+  </Card>
+  <Card title="Job queue provisioning" icon="list-check">
+    `wgCreateWikiUseJobQueue` is `true` — wiki creation is processed asynchronously through the MediaWiki job queue for reliability.
+  </Card>
+  <Card title="State management" icon="toggle-on">
+    Inactive, closed, and private wikis are all enabled via `wgCreateWikiUseInactiveWikis`, `wgCreateWikiUseClosedWikis`, and `wgCreateWikiUsePrivateWikis`.
+  </Card>
+</CardGroup>
+
+### Canned Responses
+
+Stewards selecting outcomes in the request review UI can choose from pre-configured canned responses defined in `wgCreateWikiCannedResponses`. These prevent inconsistent phrasing and ensure policy references are accurate.
+
+<CardGroup cols={3}>
+  <Card title="Approval" icon="check">
+    A single approval message reminding wiki creators to comply with the WikiOasis Content Policy at all times.
+  </Card>
+  <Card title="Decline reasons" icon="x">
+    Pre-written declines covering: obscene subdomain, vandalism/trolling, and eight distinct Content Policy provisions (illegal content, hate speech, gratuitous NSFW, commercial promotion, file hosting, anarchy wikis, duplicate scope, and problematic content).
+  </Card>
+  <Card title="On-hold reasons" icon="clock">
+    Three hold reasons: requesting more detail, awaiting a user response, and pending internal steward review.
+  </Card>
+</CardGroup>
+
+### Disallowed Subdomains
+
+`wgCreateWikiDisallowedSubdomains` prevents certain reserved names from being registered. The blocked list includes: `www`, `ftp`, `mail`, `webmail`, `admin`, `administrator`, `hostmaster`, `webmaster`, `abuse`, `contact`, `info`, `privacy`, `legal`, `help`, `support`, `blog`, `wiki`, `wiki2`, `forums`, `forum`, `phorge`, `phabricator`, `phab`, `issues`, `bugzilla`, and `issue-tracker`.
+
+## From Request to Live: Step by Step
+
+<Steps>
+  <Step title="Submit Special:RequestWiki">
+    A logged-in user on [meta.wikioasis.org](https://meta.wikioasis.org) fills in the wiki request form — providing a subdomain, sitename, description, language, and category. The request requires the `requestwiki` right, which is granted to all registered users on metawiki.
+  </Step>
+  <Step title="Steward reviews the request">
+    A steward or global-sysop evaluates the request against the [WikiOasis Content Policy](https://meta.wikioasis.org/wiki/Content_Policy). They may place the request on hold pending clarification, decline it with a canned response, or approve it.
+  </Step>
+  <Step title="CreateWiki provisions the database">
+    On approval, CreateWiki asynchronously creates the MySQL database (`{name}wiki`), runs the SQL table set defined in `wgCreateWikiSQLFiles`, and sets up the initial S3 storage containers for the wiki's media.
+  </Step>
+  <Step title="Cache is written to cw_cache/databases.php">
+    `CreateWikiDataStore->syncCache()` writes the new wiki's entry — including sitename (`s`), cluster (`c`), primary domain (`d`), and MediaWiki version (`v`) — into `cw_cache/databases.php` at `CACHE_DIRECTORY` (`/srv/mediawiki/cw_cache`).
+  </Step>
+  <Step title="MirahezeFunctions picks up the wiki">
+    On the next HTTP request to the new subdomain, `MirahezeFunctions::getLocalDatabases()` reads `cw_cache/databases.php`. The new database name is now in `$wgConf->wikis`, so `isMissing()` returns `false` and the wiki loads normally.
+  </Step>
+  <Step title="Wiki is live">
+    The wiki is fully accessible. The requesting user is automatically made a bureaucrat and can begin configuring extensions, permissions, and settings via Special:ManageWiki.
+  </Step>
+</Steps>
+
+## Missing Wiki Handling
+
+If a request arrives for a hostname that does not match any entry in `cw_cache/databases.php`, `MirahezeFunctions::isMissing()` returns `true`. The farm then checks the host:
+
+- For `*.skywiki.org` hosts: `MissingSkyWiki.php` is served, directing bureaucrats to email `stewards@wikioasis.org` for migration assistance.
+- For all other hosts: `MissingWiki.php` is served — an HTTP **410 Gone** page with WikiOasis branding and links to [meta.wikioasis.org](https://meta.wikioasis.org) and the Discord.
+
+<Note>
+  After serving the 410 page, `MissingWiki.php` calls `CreateWikiDataStore->syncCache()` to refresh the cache. This means a legitimately created wiki that appears "missing" due to a stale cache will automatically self-heal on the next request — no manual cache purge is required.
+</Note>
+
+## Version Pinning at Creation
+
+By default, every new wiki runs on the farm's **stable** MediaWiki version (currently `1.45`). Version overrides are stored in `wikiVersions.php` and require the `managewiki-restricted` right to change.
+
+<Note>
+  Only stewards and tech team members hold the `managewiki-restricted` right. Regular wiki bureaucrats cannot change a wiki's MediaWiki version. See [Per-Wiki Version Management](/wikis/versions) for full details.
+</Note>

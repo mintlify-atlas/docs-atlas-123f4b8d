@@ -1,0 +1,235 @@
+---
+title: "GlobalSettings.php: Farm-Wide Settings and Extension Loading"
+sidebarTitle: "GlobalSettings"
+description: "Farm-wide config after SiteConfiguration resolves: hooks, global extensions, CentralAuth strict + SUL3, shared-domain overrides, and conditional extension loading."
+---
+
+`GlobalSettings.php` is included near the **end** of the `LocalSettings.php` include chain, after `ManageWikiSettings.php` has already applied the per-wiki configuration extracted from the database. This ordering is intentional: by the time `GlobalSettings.php` runs, the `$wi` object is fully initialised, `$cwPrivate` and `$cwClosed` flags are set, and `$wmgSharedDomainPathPrefix` reflects whether the current request is coming through the shared CentralAuth domain. GlobalSettings can therefore make real decisions rather than just set static values.
+
+## Hooks Registered
+
+Three hooks wired in GlobalSettings.php connect MediaWiki's extension events to `MirahezeFunctions` methods:
+
+| Hook | Handler | Purpose |
+|---|---|---|
+| `CreateWikiGenerateDatabaseLists` | `MirahezeFunctions::onGenerateDatabaseLists` | Populates per-wiki `databases.php` cache with version (`v`), domain (`d`), and cluster (`c`) data |
+| `ManageWikiCoreAddFormFields` | `MirahezeFunctions::onManageWikiCoreAddFormFields` | Adds custom fields (primary domain, article path, version channel) to the ManageWiki core form |
+| `ManageWikiCoreFormSubmission` | `MirahezeFunctions::onManageWikiCoreFormSubmission` | Persists those fields on save, calling `setWikiVersion` from `MultiVersion.php` |
+
+`MultiVersion.php` is also loaded here via `require_once '/srv/mediawiki/config/MultiVersion.php'`, making the version-setting helper available.
+
+## Global Extensions
+
+Four extensions are loaded unconditionally on every wiki, regardless of ManageWiki settings:
+
+```php
+wfLoadExtensions( [
+    'CentralAuth',
+    'GlobalPreferences',
+    'GlobalBlocking',
+    'RemovePII',
+] );
+```
+
+These extensions provide farm-level identity, preference synchronisation, global IP blocking, and GDPR/PII removal capabilities that must be uniformly available across the entire farm.
+
+## CentralAuth & SUL3 Configuration
+
+```php
+$wgCentralAuthStrict       = true;
+$wgCentralAuthEnableSul3   = true;
+```
+
+`$wgCentralAuthStrict = true` means users **must** have a global CentralAuth account to log in — local-only accounts cannot authenticate. The local password provider is set to `loginOnly` mode so it cannot be used to create new accounts.
+
+The shared domain callback builds per-wiki SSO URLs from the `accounts.wikioasis.org` domain:
+
+```php
+$wgCentralAuthSharedDomainCallback = static fn ( $dbname ) =>
+    "https://{$wi->getSharedDomain()}/$dbname";
+```
+
+### Shared Domain Overrides
+
+When a request arrives at `accounts.wikioasis.org` (`$wmgSharedDomainPathPrefix` is set), GlobalSettings applies additional overrides on top of those set in `LocalSettings.php`:
+
+```php
+$wgCentralAuthCookieDomain = '.' . MirahezeFunctions::getDefaultServer();
+$wgCookiePrefix            = 'auth';
+$wgSessionName             = 'authSession';
+$wgWebAuthnNewCredsDisabled = false;   // WebAuthn allowed on shared domain
+$wgCheckUserClientHintsEnabled = true;
+$wgCheckUserAlwaysSetClientHintHeaders = true;
+```
+
+This means the cookie domain is broadened to `.wikioasis.org` for cross-wiki SSO, WebAuthn passkey registration is **enabled** on the shared domain (it is disabled everywhere else via `$wgWebAuthnNewCredsDisabled = true`), and CheckUser client hints headers are collected for every request through the shared domain.
+
+## Conditional Extension Loading
+
+Optional extensions are loaded at runtime based on whether they are active for the current wiki (as tracked by ManageWiki). This avoids loading unused PHP for extensions the wiki has not enabled.
+
+<Accordion title="Bootstrap (Chameleon dependency)">
+  ```php
+  if ( $wi->isExtensionActive( 'chameleon' ) ) {
+      wfLoadExtension( 'Bootstrap' );
+  }
+  ```
+
+  Bootstrap is not independently selectable; it is a dependency of the Chameleon skin and is loaded automatically when Chameleon is active.
+
+  <Note>
+    Chameleon and SnapWikiSkin are currently listed as disabled extensions in `LocalSettings.php` due to incompatibility with MediaWiki 1.45.
+  </Note>
+</Accordion>
+
+<Accordion title="Elastica + CirrusSearch (Full-Text Search)">
+  ```php
+  if ($wi->isExtensionActive('CirrusSearch')) {
+      wfLoadExtension('Elastica');
+      $wgSearchType = 'CirrusSearch';
+      $wgCirrusSearchServers = [
+          'opensearch-us-east-011.ovvin.wonet',
+          'opensearch-us-east-012.ovvin.wonet',
+      ];
+  }
+  ```
+
+  When CirrusSearch is active, Elastica is loaded automatically and the search backend is pointed at two OpenSearch nodes in the US-East region. If `RelatedArticles` is also active, `$wgRelatedArticlesUseCirrusSearch` is set to `true` to use the search index for related article suggestions rather than a database query.
+</Accordion>
+
+<Accordion title="SocialProfile (Avatar / Award backend)">
+  ```php
+  if ($wi->isExtensionActive('SocialProfile')) {
+      require_once "$IP/extensions/SocialProfile/SocialProfile.php";
+      $wgSocialProfileFileBackend = 'AmazonS3';
+  }
+  ```
+
+  SocialProfile is loaded via a direct `require_once` (not `wfLoadExtension`) because of how its entry point is structured. The file backend is set to `AmazonS3` so avatars and awards are stored in the R2 bucket under the global `avatars` and `awards` containers.
+</Accordion>
+
+<Accordion title="UserProfileV2 (R2 backend + CDN URL)">
+  ```php
+  if ($wi->isExtensionActive('UserProfileV2')) {
+      $wgUserProfileV2Backend = 'AmazonS3';
+      $wgUserProfileGlobalUploadBaseUrl = "https://cdn.wikioasis.org/{$wgDBname}";
+  }
+  ```
+
+  UserProfileV2 avatars are stored in the per-wiki `upv2avatars` zone within the R2 bucket, served through `cdn.wikioasis.org` with the wiki's database name as the path prefix.
+</Accordion>
+
+<Accordion title="JsonConfig (Map & Tabular data)">
+  When JsonConfig is active, two content models are configured in the `Data:` namespace (namespace 486):
+
+  | Model | Pattern | Remote Source |
+  |---|---|---|
+  | `Map.JsonConfig` | `/*.map$/` | `https://commons.miraheze.org/w/api.php` |
+  | `Tabular.JsonConfig` | `/*.tab$/` | `https://commons.miraheze.org/w/api.php` |
+
+  Both models use `'isLocal' => false` (data is not stored locally) and fetch from Miraheze Commons as the remote repository. The interwiki prefix is `commons`, matching `wgJsonConfigInterwikiPrefix` set in `LocalSettings.php`.
+</Accordion>
+
+<Accordion title="Wikibase">
+  ```php
+  if ( $wi->isAnyOfExtensionsActive( 'WikibaseClient', 'WikibaseRepository' ) ) {
+      require_once "$IP/config/Wikibase.php";
+  }
+  ```
+
+  Either the client or repository component being active triggers loading the dedicated `Wikibase.php` configuration file, which handles the more complex Wikibase-specific settings including federated properties, entity namespaces, and repo/client cross-wiki linking.
+</Accordion>
+
+<Accordion title="OOJSPlus (Dialog & Upload dependency)">
+  ```php
+  if ( $wi->isAnyOfExtensionsActive( 'StandardDialogs', 'EnhancedUpload' ) ) {
+      wfLoadExtension( 'OOJSPlus' );
+  }
+  ```
+
+  OOJSPlus is a shared UI library required by both StandardDialogs and EnhancedUpload. It is not independently listed in ManageWiki; instead it is auto-loaded whenever either dependent extension is active.
+</Accordion>
+
+<Accordion title="PortableInfobox (Parsoid disabled)">
+  ```php
+  if ( $wi->isExtensionActive( 'PortableInfobox' ) ) {
+      $wgParserMigrationEnableParsoidDiscussionTools = false;
+      $wgParserMigrationEnableParsoidArticlePages    = false;
+  }
+  ```
+
+  PortableInfobox is incompatible with Parsoid's article-page migration mode (tracked internally as T89). When PortableInfobox is active, both Parsoid migration flags are forced off to prevent rendering breakage. These flags are set to `false` by default in `LocalSettings.php` anyway, but this block acts as an explicit guard.
+</Accordion>
+
+## Discord Notifications
+
+The wiki URL for Discord notification embeds is constructed from `$wi->server` and the wiki's article path, stripping the `$1` placeholder:
+
+```php
+$articlePath = str_replace( '$1', '', $wgArticlePath );
+$wgDiscordNotificationWikiUrl = $wi->server . $articlePath;
+```
+
+For **public wikis only** (`!$cwPrivate`), the global Discord webhook URL is assigned:
+
+```php
+if ( !$cwPrivate ) {
+    $wgDiscordIncomingWebhookUrl = $wmgGlobalDiscordWebhookUrl;
+}
+```
+
+Private wikis do not receive a webhook URL and therefore do not post to any Discord channel. The `$wmgGlobalDiscordWebhookUrl` variable originates from `PrivateSettings.php`.
+
+## Closed Wiki Handling
+
+When `$cwClosed` is `true` (set by CreateWiki), all write permissions are revoked from the `*` group:
+
+```php
+$wgRevokePermissions = [
+    '*' => [
+        'block'         => true,
+        'createaccount' => true,
+        'delete'        => true,
+        'edit'          => true,
+        'protect'       => true,
+        'import'        => true,
+        'upload'        => true,
+        'undelete'      => true,
+    ],
+];
+```
+
+If the Comments extension is also active on the closed wiki, `comment` permission is revoked as well. This ensures closed wikis are read-only even if a user somehow retains other local group memberships.
+
+## DataDump Configuration
+
+The DataDump extension is configured with three dump types: XML, ZIP, and ManageWiki backup.
+
+<Accordion title="XML Dump">
+  | Setting | Value |
+  |---|---|
+  | `file_ending` | `.xml.gz` |
+  | `generate.type` | `mwscript` |
+  | `generate.script` | `$IP/maintenance/dumpBackup.php` |
+  | `generate.options` | `--full --logs --uploads --output gzip:/tmp/${filename}` |
+  | `$wgDataDumpDirectory` | `/var/www/dumps/` |
+  | `limit` | `1` concurrent generation |
+
+  **Permissions:**
+
+  | Action | Required right |
+  |---|---|
+  | View dump | `view-dump` |
+  | Generate dump | `generate-dump` |
+  | Delete dump | `delete-dump` |
+
+  The XML dump uses `useBackendTempStore: true`, meaning it is generated in `/tmp` first and then moved to the dump directory, avoiding partial-file exposure. A namespace selector is shown in the UI (`htmlform.type: namespaceselect`) to allow namespace-scoped dumps.
+</Accordion>
+
+<Accordion title="ZIP Dump">
+  The ZIP dump type packages the wiki's image directory (private wikis use `/var/www/images/{$wgDBname}`; public wikis use `$IP/images/{$wgDBname}`) into a ZIP archive stored in `$wgDataDumpDirectory`. The same view/generate/delete permission set applies.
+</Accordion>
+
+<Accordion title="ManageWiki Backup">
+  A JSON backup of the wiki's ManageWiki configuration is generated via the `generateManageWikiBackup.php` maintenance script from the MirahezeMagic extension. This backup captures extensions, settings, namespaces, and permissions in a restorable format.
+</Accordion>

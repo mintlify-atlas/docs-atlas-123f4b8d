@@ -1,0 +1,317 @@
+---
+title: "LocalSettings.php: WikiOasis Farm Bootstrap Entry Point"
+sidebarTitle: "LocalSettings"
+description: "LocalSettings.php bootstrap deep-dive: load order, staging vs production detection, virtual-domain mappings, versioned paths, and $wgConf settings categories."
+---
+
+`LocalSettings.php` is the single file that MediaWiki loads first on every request across the WikiOasis farm. It does not simply hold static configuration — it is an **orchestration script** that validates the entry point, pulls in credentials, resolves which wiki is being served, builds the full `$wgConf->settings` tree for SiteConfiguration, and then includes every downstream config file in the correct order. Nothing in the farm works without understanding this file's structure and sequencing.
+
+<Warning>
+  **Never edit `LocalSettings.php` directly on production** without a full understanding of the load chain. A syntax error or misordered `require_once` will take down every wiki simultaneously. All changes should be reviewed, version-controlled, and tested on the staging environment (hostname `staging11`) before being deployed.
+</Warning>
+
+## Load Order
+
+When MediaWiki bootstraps, `LocalSettings.php` runs a strict sequence of includes and object instantiation steps. Understanding the order is critical, because each step depends on what the previous one established.
+
+<Steps>
+  <Step title="Entry Point Guards">
+    Three `defined()` checks at the top of the file abort execution if `MEDIAWIKI`, `CACHE_MEMCACHED`, or `MW_ENTRY_POINT` are not already defined, preventing direct web access to the config file.
+  </Step>
+  <Step title="PrivateSettings.php">
+    `require_once "$IP/config/PrivateSettings.php"` loads database credentials, secret keys, R2/S3 credentials, Sentry DSN, and OAuth key paths from `/srv/mediawiki/config/PrivateSettings.php`. This file is **not in the repository**.
+  </Step>
+  <Step title="Virtual Domain Mapping">
+    Based on whether `php_uname('n')` returns `staging11` (the staging hostname), virtual domains are mapped to `wikidbbeta` / `metawikibeta` (staging) or `wikidb` / `metawiki` (production). See the [Environment Detection](#environment-detection) section below.
+  </Step>
+  <Step title="MirahezeFunctions.php">
+    `require_once "$IP/config/MirahezeFunctions.php"` defines the `MirahezeFunctions` class, which provides all farm-level helpers for resolving databases, servers, versions, and extensions.
+  </Step>
+  <Step title="GlobalExtensions.php">
+    `require_once "$IP/config/GlobalExtensions.php"` loads extensions that must be active on every wiki regardless of ManageWiki settings.
+  </Step>
+  <Step title="MirahezeFunctions instantiation">
+    `$wi = new MirahezeFunctions()` resolves the current wiki's database name, server URL, site name, MediaWiki version, and cluster assignments. All subsequent code in `LocalSettings.php` uses `$wi`.
+  </Step>
+  <Step title="$wgConf->settings population">
+    The large `$wgConf->settings +=` block registers per-wiki configuration for every extension and core MediaWiki setting. Values can be keyed by wiki DB name for per-wiki overrides.
+  </Step>
+  <Step title="ManageWiki config files">
+    `ManageWikiExtensions.php`, `ManageWikiNamespaces.php`, and `ManageWikiSettings.php` apply the per-wiki extension list and namespace/settings configuration stored in the database by ManageWiki.
+  </Step>
+  <Step title="Final includes">
+    `Database.php`, `GlobalCache.php`, `GlobalSettings.php`, and `LocalWiki.php` are included last. `GlobalSettings.php` registers farm-wide hooks and conditionally loads optional extensions. See each file's documentation for details.
+  </Step>
+</Steps>
+
+## Environment Detection
+
+The farm distinguishes between **staging** and **production** purely by hostname. If `php_uname('n') === 'staging11'`, all virtual domain mappings point to the `wikidbbeta` / `metawikibeta` databases. Otherwise, production databases are used.
+
+```php
+if ( php_uname( 'n' ) === 'staging11' ) {
+    $wgVirtualDomainsMapping['virtual-centralauth'] = ['db' => 'wikidbbeta'];
+    $wgVirtualDomainsMapping['virtual-createwiki']  = ['db' => 'wikidbbeta'];
+    // ...all other virtual domains → wikidbbeta / metawikibeta
+} else {
+    $wgVirtualDomainsMapping['virtual-centralauth'] = ['db' => 'wikidb'];
+    $wgVirtualDomainsMapping['virtual-createwiki']  = ['db' => 'wikidb'];
+    // ...all other virtual domains → wikidb / metawiki
+}
+```
+
+**Full virtual domain mapping (production):**
+
+| Virtual Domain | Database |
+|---|---|
+| `virtual-centralauth` | `wikidb` |
+| `virtual-checkuser-global` | `wikidb` |
+| `virtual-createwiki` | `wikidb` |
+| `virtual-createwiki-central` | `metawiki` |
+| `virtual-globalblocking` | `wikidb` |
+| `virtual-managewiki` | `wikidb` |
+| `virtual-oathauth` | `wikidb` |
+| `virtual-LoginNotify` | `wikidb` |
+| `virtual-importdump` | `metawiki` |
+| `virtual-requestcustomdomain` | `metawiki` |
+| `virtual-interwiki` | `metawiki` |
+| `virtual-interwiki-interlanguage` | `metawiki` |
+
+## Shared Domain Detection
+
+When the `HTTP_HOST` header matches the shared/CentralAuth domain (`accounts.wikioasis.org`), or the `MW_USE_SHARED_DOMAIN` environment variable is set, LocalSettings.php activates shared-domain mode:
+
+```php
+if ( ( $_SERVER['HTTP_HOST'] ?? '' ) === $wi->getSharedDomain()
+    || getenv( 'MW_USE_SHARED_DOMAIN' )
+) {
+    $wgLoadScript  = "{$wi->server}/w/load.php";
+    $wmgSharedDomainPathPrefix = "/$wgDBname";
+    $wgCanonicalServer = 'https://' . $wi->getSharedDomain();
+    $wgUseSiteCss = false;
+    $wgUseSiteJs  = false;
+}
+```
+
+In shared-domain mode:
+- `$wgLoadScript` is redirected to the wiki's own origin rather than the shared domain.
+- `$wgCanonicalServer` becomes `https://accounts.wikioasis.org`.
+- `$wgUseSiteCss` and `$wgUseSiteJs` are both set to `false`, preventing wiki-specific CSS/JS from running during the CentralAuth SSO flow.
+- `$wgArticlePath` gets the per-wiki path prefix (e.g. `/metawiki/wiki/$1`).
+
+## Path Configuration
+
+All resource paths are constructed from the resolved MediaWiki version so that multiple MediaWiki releases can coexist on the same host:
+
+```php
+$wgScriptPath        = $wmgSharedDomainPathPrefix ?: '/w';
+$wgScript            = "$wgScriptPath/index.php";
+$wgResourceBasePath  = ( $wmgSharedDomainPathPrefix ?: '' ) . '/versions/' . $wi->version;
+$wgExtensionAssetsPath = "$wgResourceBasePath/extensions";
+$wgStylePath           = "$wgResourceBasePath/skins";
+```
+
+For example, a wiki running on the `1.45` stable channel will have `$wgResourceBasePath = /versions/1.45`, meaning all extension and skin assets are served from `/versions/1.45/extensions/` and `/versions/1.45/skins/`.
+
+## `$wgConf->settings` Categories
+
+The bulk of `LocalSettings.php` is a large `$wgConf->settings +=` block. Settings are keyed by MediaWiki variable name; values are arrays where `'default'` applies farm-wide and additional keys override per wiki.
+
+<Accordion title="Core Limits">
+  | Setting | Default | Per-wiki Override |
+  |---|---|---|
+  | `wgMaxArticleSize` | `2048` KB (2 MB) | `projectherzlwiki` → 49152 KB (48 MB); `smowiki` → 10240 KB (10 MB) |
+  | `wgAPIMaxResultSize` | `4194304` bytes (4 MB) | `projectherzlwiki` → ~100 MB |
+  | `wgHTTPTimeout` | `3` seconds | — |
+  | `wgDeleteRevisionsLimit` | `1000` | — |
+  | `wgCategoryPagingLimit` | `200` | `italianbrainrotwiki` → 50 |
+
+  Jobs are not run inline on web requests (`wgJobRunRate = 0`); they are processed by a dedicated job runner via Redis.
+</Accordion>
+
+<Accordion title="Mail">
+  | Setting | Value |
+  |---|---|
+  | `wgEnableEmail` | `true` |
+  | `wgEnableUserEmail` | `true` |
+  | `wgPasswordSender` | `noreply@wikioasis.org` |
+  | `wgEnotifUserTalk` | `true` |
+  | `wgEnotifWatchlist` | `true` |
+  | `wgEmailAuthentication` | `true` |
+
+  `wgMediaModerationFrom` and `wgMediaModerationRecipientList` both also use `noreply@wikioasis.org` and `safety@wikioasis.org` respectively.
+</Accordion>
+
+<Accordion title="File Uploads">
+  All uploads use the Cloudflare R2/S3 backend with the `AmazonS3FileBackend` class. The bucket is `wikioasis-media` and files are stored in a per-wiki subdirectory (`/$wgDBname`).
+
+  | Setting | Value |
+  |---|---|
+  | `wgEnableUploads` | `true` |
+  | `wgMaxUploadSize` | `134217728` bytes (128 MB) |
+  | `wgAWSBucketName` | `wikioasis-media` |
+  | `wgAWSBucketDomain` | `https://cdn.wikioasis.org` |
+  | `wgAWSBucketTopSubdirectory` | `/{$wgDBname}` |
+  | `wgUseImageMagick` | `true` (`/usr/bin/convert`) |
+  | `wgSVGNativeRendering` | `true` |
+
+  **Allowed file extensions (default):** `djvu`, `gif`, `ico`, `jpg`, `jpeg`, `ogg`, `pdf`, `png`, `svg`, `webp`
+
+  Global shared containers (used across all wikis for SocialProfile/UserProfileV2):
+
+  | Container | Bucket Path |
+  |---|---|
+  | `avatars` | `wikioasis-media/avatars` |
+  | `awards` | `wikioasis-media/awards` |
+  | `upv2avatars` | `wikioasis-media/upv2avatars` |
+
+  For **private wikis**, `$wgUploadPath` is set to `/w/img_auth.php` and public read on the bucket zones is revoked. Public wikis retain `$wgGroupPermissions['*']['read'] = true`.
+</Accordion>
+
+<Accordion title="Skins">
+  Both `wgDefaultSkin` and `wgDefaultMobileSkin` are set to `citizen`, meaning every wiki uses the Citizen skin on both desktop and mobile unless overridden per-wiki through ManageWiki.
+</Accordion>
+
+<Accordion title="CentralAuth">
+  | Setting | Value |
+  |---|---|
+  | `wgCentralAuthLoginWiki` | `loginwiki` |
+  | `wgCentralAuthCentralWiki` | `metawiki` (beta: `metawikibeta`) |
+  | `wgCentralAuthDatabase` | `wikidb` (beta: `wikidbbeta`) |
+  | `wgCentralAuthPreventUnattached` | `true` |
+  | `wgCentralAuthRestrictSharedDomain` | `true` |
+  | `wgCentralAuthAutoMigrate` | `true` |
+  | `wgCentralAuthAutoMigrateNonGlobalAccounts` | `true` |
+  | `wgCentralAuthEnableGlobalRenameRequest` | `true` |
+  | `wgCentralAuthTokenCacheType` | `redis` |
+  | `wgCookieSameSite` | `None` |
+  | `wgUseSameSiteLegacyCookies` | `true` |
+
+  Auto-create wikis on login: `loginwiki` and `metawiki`. `$wgCentralAuthStrict = true` and SUL3 (`$wgCentralAuthEnableSul3 = true`) are set in `GlobalSettings.php`.
+</Accordion>
+
+<Accordion title="CreateWiki">
+  | Setting | Value |
+  |---|---|
+  | `wgCreateWikiSubdomain` | `wikioasis.org` |
+  | `wgCreateWikiDatabase` | `wikidb` |
+  | `wgCreateWikiDatabaseSuffix` | `wiki` |
+  | `wgCreateWikiGlobalWiki` | `metawiki` |
+  | `wgCreateWikiCacheDirectory` | `/srv/mediawiki/cw_cache` |
+  | `wgCreateWikiCacheType` | `redis` |
+  | `wgCreateWikiUseJobQueue` | `true` |
+
+  **Wiki lifecycle state days:**
+
+  | State | Days |
+  |---|---|
+  | Inactive | `90` |
+  | Closed | `30` |
+  | Removed | `245` |
+  | Deleted | `30` |
+
+  Features enabled: categories, closed wikis, custom domains, Echo notifications, experimental wikis, inactive wikis, private wikis, biographical option.
+</Accordion>
+
+<Accordion title="ManageWiki">
+  All five ManageWiki modules are enabled farm-wide:
+
+  ```php
+  'wgManageWikiModulesEnabled' => [
+      'default' => [
+          'core'        => true,
+          'extensions'  => true,
+          'namespaces'  => true,
+          'permissions' => true,
+          'settings'    => true,
+      ],
+  ],
+  ```
+
+  **Default extensions enabled on every new wiki** (`wgManageWikiExtensionsDefault`):
+
+  `categorytree`, `cite`, `citethispage`, `codeeditor`, `codemirror`, `darkmode`, `globaluserpage`, `minervaneue`, `mobilefrontend`, `syntaxhighlight_geshi`, `textextracts`, `urlshortener`, `wikiseo`
+</Accordion>
+
+<Accordion title="AbuseFilter">
+  | Setting | Value |
+  |---|---|
+  | `wgAbuseFilterCentralDB` | `metawiki` |
+  | `wgAbuseFilterIsCentral` | `true` on `metawiki` only |
+  | `wgAbuseFilterBlockDuration` | `indefinite` |
+  | `wgAbuseFilterAnonBlockDuration` | `2592000` seconds (30 days) |
+  | `wgAbuseFilterNotifications` | `udp` |
+  | `wgAbuseFilterLogPrivateDetailsAccess` | `true` |
+  | `wgAbuseFilterPrivateDetailsForceReason` | `true` |
+
+  Enabled actions: `block`, `blockautopromote`, `degroup`, `disallow`, `tag`, `throttle`, `warn`. Range blocks are disabled (`rangeblock => false`).
+</Accordion>
+
+<Accordion title="Temporary Accounts">
+  Temporary accounts are enabled globally for anonymous edits.
+
+  | Setting | Value |
+  |---|---|
+  | `enabled` | `true` |
+  | `actions` | `['edit']` |
+  | `genPattern` | `~$1` |
+  | `reservedPattern` | `~$1` |
+  | `serialProvider` | `centralauth` (with `useYear: true`) |
+  | `serialMapping` | `readable-numeric` |
+  | `expireAfterDays` | `90` |
+  | `notifyBeforeExpirationDays` | `10` |
+</Accordion>
+
+<Accordion title="CDN / Varnish (Cloudflare)">
+  `wgUseCdn = true` is set globally. The `wgCdnServersNoPurge` array whitelists all Cloudflare IP ranges plus the two internal proxy servers so that purge requests from those IPs are treated as trusted CDN traffic:
+
+  **Internal proxy servers:** `10.0.1.2` (proxy-us-east-011), `10.0.2.2` (proxy-us-east-021)
+
+  **Cloudflare IPv4 ranges (sample):** `103.21.244.0/22`, `104.16.0.0/13`, `162.158.0.0/15`, `172.64.0.0/13`, `173.245.48.0/20`, and others.
+
+  **Cloudflare IPv6 ranges:** `2400:cb00::/32`, `2606:4700::/32`, `2803:f800::/32`, and others.
+
+  Cloudflare cache purge is handled by the `CFCachePurge` extension, configured with `wgCFCachePurgePurgeableImageHosts = ['cdn.wikioasis.org']`.
+</Accordion>
+
+## Final Include Chain
+
+After `$wgConf->settings` is fully populated, `LocalSettings.php` includes the remaining configuration files in this order:
+
+```
+ManageWikiExtensions.php   → registers all available extensions in ManageWiki
+ManageWikiNamespaces.php   → applies per-wiki namespace configuration
+ManageWikiSettings.php     → applies per-wiki settings from ManageWiki
+Database.php               → configures LBFactoryMulti and cluster routing
+GlobalCache.php            → sets Redis/Memcached cache types and TTLs
+GlobalSettings.php         → farm-wide hooks, conditional extension loading
+LocalWiki.php              → per-server or per-environment local overrides
+```
+
+<Note>
+  `GlobalSettings.php` is deliberately included **after** `ManageWikiSettings.php` so that per-wiki settings retrieved from the database by ManageWiki are already in place when GlobalSettings runs its extension-loading conditionals.
+</Note>
+
+## Localisation Cache
+
+The localisation cache uses `LCStoreStaticArray` (PHP static files) stored in a per-version directory so that simultaneous deployments of different MediaWiki versions do not collide:
+
+```php
+$wgLocalisationCacheConf['storeClass']     = LCStoreStaticArray::class;
+$wgLocalisationCacheConf['storeDirectory'] = '/srv/mediawiki/cache/' . MirahezeFunctions::getMediaWikiVersion();
+$wgLocalisationCacheConf['manualRecache']  = true;
+```
+
+If the `en.l10n.php` file does not yet exist in the cache directory (e.g., after a fresh deployment), `manualRecache` is automatically set to `false` so MediaWiki rebuilds it on the next request.
+
+## StatsD / Observability
+
+Metrics are emitted in DogStatsD format to the internal monitoring host:
+
+```php
+$wgStatsFormat   = 'dogstatsd';
+$wgStatsTarget   = 'udp://monitoring-us-east-021.ovvin.wonet:9125';
+$wgWMEStatsdBaseUri = 'udp://monitoring-us-east-021.ovvin.wonet:9125';
+```
+
+Error tracking uses Sentry, loaded via `require_once __DIR__ . '/Sentry.php'` with the DSN sourced from `$sentryDSN` in `PrivateSettings.php`.

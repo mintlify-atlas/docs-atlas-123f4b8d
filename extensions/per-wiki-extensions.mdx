@@ -1,0 +1,151 @@
+---
+title: "Per-Wiki Extensions via ManageWiki on WikiOasis Farms"
+sidebarTitle: "Per-Wiki Extensions"
+description: "How wiki administrators enable and manage optional extensions through ManageWiki, including the registry structure, helper methods, and default extensions."
+---
+
+Beyond the globally loaded baseline, WikiOasis gives wiki administrators fine-grained control over which optional extensions are active on their wiki through the ManageWiki extension registry. Every enableable extension is declared as an entry in the `$wgManageWikiExtensions` array in `ManageWikiExtensions.php`, and administrators can toggle extensions on or off by visiting **Special:ManageWiki/extensions** on their wiki. This system means that the farm can host hundreds of different wikis, each with a tailored feature set, all sharing the same MediaWiki installation and the same configuration management infrastructure.
+
+<Note>
+  New wikis are created with a set of default extensions pre-enabled. The
+  following extensions are turned on automatically for every new wiki:
+  **CategoryTree**, **Cite**, **CiteThisPage**, **CodeEditor**, **CodeMirror**,
+  **DarkMode**, **GlobalUserPage**, **MinervaNeue**, **MobileFrontend**,
+  **SyntaxHighlight**, **TextExtracts**, **UrlShortener**, and **WikiSEO**.
+</Note>
+
+## The ManageWiki Extension Registry
+
+The `$wgManageWikiExtensions` array in `ManageWikiExtensions.php` is the central registry of every extension that can be enabled or disabled by wiki administrators. Each entry is keyed by a lowercase slug (e.g. `'visualeditor'`, `'cargo'`) and contains a structured definition that drives both the ManageWiki UI and the installation/removal logic.
+
+### Extension Entry Structure
+
+Each extension entry supports the following fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | The canonical extension name as it appears in `extension.json` or `$wgExtensionCredits`. Must match exactly. |
+| `displayname` | `string` | Optional. A human-readable display name or i18n message key shown in the UI when it differs from `name`. |
+| `linkPage` | `string` | Full URL to the extension's documentation page on mediawiki.org (or GitHub). |
+| `description` | `string` | Optional plain-text description or i18n message key shown in the extension list. |
+| `help` | `string` | Optional additional HTML help text shown below the extension entry in ManageWiki. |
+| `conflicts` | `string\|false` | A string of extension slugs (space- or comma-separated) that cannot be active simultaneously with this extension. `false` means no conflicts. |
+| `requires` | `array` | Conditions that must be met before the extension can be enabled. See below. |
+| `install` | `array` | Actions to perform when the extension is enabled. See below. |
+| `remove` | `array` | Actions to perform when the extension is disabled. Follows the same structure as `install`. |
+| `section` | `string` | The section group this extension belongs to in the ManageWiki UI. |
+
+### The `requires` Array
+
+The `requires` key controls who can enable the extension and under what conditions:
+
+| Key | Description |
+|---|---|
+| `activeusers` | Maximum number of active users a wiki may have to enable this extension. |
+| `articles` | Maximum article count a wiki may have. |
+| `pages` | Maximum total page count a wiki may have. |
+| `extensions` | Array of other extension slugs that must already be enabled. |
+| `permissions` | Array of user permissions required to toggle the extension (e.g. `'managewiki-restricted'`). |
+| `visibility['state']` | Restrict to `'private'` or `'public'` wikis only. |
+
+### The `install` / `remove` Arrays
+
+These arrays define what happens when an extension is enabled or disabled:
+
+| Key | Description |
+|---|---|
+| `sql` | SQL table files to run on install, mapped as `table_name => sql_file_path`. |
+| `mwscript` | Maintenance scripts to run, mapped as `script_path => options_array`. |
+| `namespaces` | Namespace definitions to create (id, searchable, subpages, protection, etc.). |
+| `permissions` | User group permission grants to apply to the wiki. |
+| `settings` | ManageWiki settings to update when the extension is toggled, mapped as `variable => value`. |
+| `files` | File copies, mapped as `destination => source`. |
+
+## Checking Extension State in PHP Config
+
+Within `GlobalSettings.php`, `LocalWiki.php`, and any other config files evaluated during bootstrap, the `$wi` (MirahezeFunctions) object provides three methods for checking whether extensions are active on the current wiki:
+
+```php
+// Check a single extension
+if ( $wi->isExtensionActive( 'VisualEditor' ) ) {
+    // VisualEditor-specific config
+}
+
+// Check if any of several extensions are active
+if ( $wi->isAnyOfExtensionsActive( 'WikibaseClient', 'WikibaseRepository' ) ) {
+    require_once "$IP/config/Wikibase.php";
+}
+
+// Check if all of a set of extensions are active simultaneously
+if ( $wi->isAllOfExtensionsActive( 'Translate', 'UniversalLanguageSelector' ) ) {
+    // Config that requires both
+}
+```
+
+### Method Reference
+
+| Method | Signature | Description |
+|---|---|---|
+| `isExtensionActive` | `isExtensionActive(string $extension): bool` | Returns `true` if the named extension is currently active on this wiki. |
+| `isAnyOfExtensionsActive` | `isAnyOfExtensionsActive(string ...$extensions): bool` | Returns `true` if at least one of the listed extensions is active. |
+| `isAllOfExtensionsActive` | `isAllOfExtensionsActive(string ...$extensions): bool` | Returns `true` only if every listed extension is active. |
+| `getActiveExtensions` | `getActiveExtensions(bool $useConfigCache = true): array` | Returns the full array of currently active extension names for the wiki, optionally bypassing the config cache. |
+
+## How Extensions Are Loaded at Bootstrap
+
+During the MediaWiki bootstrap process, `MirahezeFunctions::loadExtensions()` is called. It reads the per-wiki config cache file at `CACHE_DIRECTORY/{$wgDBname}.php`, resolves the current MediaWiki version, and then iterates through all active extensions returned by `getActiveExtensions()`. For each active extension, it locates the extension's `extension.json` (or `skin.json`) path from a pre-built extension list cache and queues it with `ExtensionRegistry::getInstance()->queue()`.
+
+If the config cache is absent or empty (e.g. for a newly created wiki), bootstrap falls back gracefully without loading any per-wiki extensions.
+
+<Steps>
+  <Step title="Read config cache">
+    The per-wiki cache file `config-{dbname}.php` is read from the cache directory to obtain the list of enabled extensions.
+  </Step>
+  <Step title="Resolve extension paths">
+    A version-specific `extension-list.php` cache maps extension names to their filesystem paths. If this cache does not exist, it is built by scanning the MediaWiki extensions directory.
+  </Step>
+  <Step title="Handle disabled extensions">
+    `handleDisabledExtensions()` is called to mark any globally disabled extensions in `$wgManageWikiExtensions`, adding a help notice explaining the reason and restricting re-enablement to `managewiki-restricted` users.
+  </Step>
+  <Step title="Queue active extensions">
+    Each active extension name is matched against the path map. Valid `extension.json`-backed extensions are queued with ExtensionRegistry for deferred loading.
+  </Step>
+</Steps>
+
+## Handling Disabled Extensions
+
+`MirahezeFunctions::handleDisabledExtensions()` processes the `$disabledExtensions` static array. For each globally disabled extension, it updates the `$wgManageWikiExtensions` entry to:
+
+- Set the `help` field to a notice explaining that the extension has been globally disabled and providing the stated reason.
+- Override `requires` to require the `managewiki-restricted` permission, preventing ordinary wiki administrators from enabling it.
+
+This mechanism allows platform administrators to temporarily or permanently disable an extension farm-wide (e.g. due to a security issue or incompatibility) without removing it from the registry entirely.
+
+<Warning>
+  Some extensions declare conflicts with each other in their `conflicts` field.
+  If Extension A lists Extension B as a conflict, ManageWiki will prevent both
+  from being active simultaneously. Attempting to enable a conflicting extension
+  will show an error in the ManageWiki UI. Examples include:
+  - **DynamicPageList** ↔ **DynamicPageList3** (mutual conflict)
+  - **AuthorProtect** ↔ **LockAuthor** (mutual conflict)
+  - **Comments** ↔ **ProtectionIndicator** (mutual conflict)
+  - **BlogPage** ↔ **SimpleBlogPage** (mutual conflict)
+  - **CirrusSearch** ↔ **TitleKey** (mutual conflict)
+  - **SocialProfile** ↔ **UserProfileV2** (mutual conflict)
+  - **Lingo** ↔ **Newsletter** (mutual conflict)
+  - **MyVariables** ↔ **ApprovedRevs** (mutual conflict)
+</Warning>
+
+## Enabling Extensions via Special:ManageWiki
+
+Wiki administrators access extension management at **Special:ManageWiki/extensions** on their wiki. The page groups all available extensions by section (see [Extension Sections](/extensions/extension-sections) for the full breakdown). Each extension is listed with its display name, documentation link, description, and any help text, along with a checkbox to enable or disable it.
+
+When an extension is enabled, ManageWiki runs the associated `install` actions — creating SQL tables, running maintenance scripts, provisioning namespaces, and applying permission grants — before saving the updated extension list to the wiki's config cache. When disabled, the corresponding `remove` actions are executed to clean up.
+
+<Tip>
+  Some extensions require the `managewiki-restricted` permission to enable.
+  These are typically high-impact extensions (such as **Cargo**, **CirrusSearch**,
+  **Replace Text**, or **WikibaseClient**) that can have significant performance
+  or data-model implications. Only platform stewards with the restricted
+  permission can toggle these.
+</Tip>

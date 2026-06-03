@@ -1,0 +1,152 @@
+---
+title: "Managing Per-Wiki MediaWiki Versions on WikiOasis Farm"
+sidebarTitle: "Versions"
+description: "How WikiOasis manages per-wiki MediaWiki versions via WikiFarmMultiVersion, wikiVersions.php, and the farm MEDIAWIKI_VERSIONS constant."
+---
+
+WikiOasis runs multiple MediaWiki versions simultaneously on the same hardware, and every wiki can be pinned to a specific version independently of the farm default. This capability is essential for testing extension compatibility, staging major upgrades, and giving individual wikis a controlled upgrade path. The version resolution pipeline — implemented across `MirahezeFunctions`, `WikiFarmMultiVersion`, and `wikiVersions.php` — is designed for zero-downtime operation: version writes use an atomic tmp-file rename so no request ever reads a partially written file, and the CreateWiki cache propagates version data so `MirahezeFunctions::getMediaWikiVersion()` rarely needs to hit the filesystem at all.
+
+## Farm Version Constants
+
+The three named version tracks are defined in `MirahezeFunctions::MEDIAWIKI_VERSIONS`:
+
+```php
+public const MEDIAWIKI_VERSIONS = [
+    'alpha'  => '1.46',
+    'beta'   => '1.45',
+    'stable' => '1.45',
+];
+```
+
+<CardGroup cols={3}>
+  <Card title="stable" icon="shield-check">
+    **1.45** — The production default. All newly created wikis run on this version unless explicitly overridden.
+  </Card>
+  <Card title="beta" icon="flask">
+    **1.45** — Used on the `betaoasis.xyz` realm (hostname `staging11`). Beta-realm wikis default to this track.
+  </Card>
+  <Card title="alpha" icon="triangle-exclamation">
+    **1.46** — The bleeding-edge track. Available for opt-in via `managewiki-restricted`; not recommended for production wikis.
+  </Card>
+</CardGroup>
+
+## Default Version Selection
+
+`MirahezeFunctions::getDefaultMediaWikiVersion()` determines the farm-wide fallback:
+
+```php
+public static function getDefaultMediaWikiVersion(): string {
+    return (php_uname('n') === self::BETA_HOSTNAME
+        && isset(self::MEDIAWIKI_VERSIONS['beta']))
+        ? 'beta'
+        : 'stable';
+}
+```
+
+On the `staging11` hostname (the beta cluster), the default track is `beta`. On all production servers, it is `stable`. This value is then resolved to its concrete version string via `resolveMediaWikiVersion()`, which looks up the track name in `MEDIAWIKI_VERSIONS` — falling back to treating the input as a literal version string if no matching track is found.
+
+## Version Resolution for a Specific Wiki
+
+`MirahezeFunctions::getMediaWikiVersion(?string $database = null): string` resolves the version for a given database, following this priority chain:
+
+1. **Environment variable** — If `MIRAHEZE_WIKI_VERSION` is set, it takes absolute precedence (useful for maintenance runs).
+2. **wikiVersions.php** — The override file at `/srv/mediawiki/config/wikiVersions.php` is checked first. If the `$database` key is present, that version is used immediately.
+3. **databases.php cache** — The `v` key in the wiki's `cw_cache/databases.php` entry is read. This is populated by the `CreateWikiPhpBuilder` hook.
+4. **Farm default** — `MEDIAWIKI_VERSIONS[getDefaultMediaWikiVersion()]` is used as the final fallback.
+
+For CLI requests, the version is also inferred from the filesystem path of the running script (`/srv/mediawiki/versions/{version}/maintenance/...`).
+
+## wikiVersions.php File Format
+
+`wikiVersions.php` is a plain PHP file that returns a simple associative array. It lives at `/srv/mediawiki/config/wikiVersions.php` and is managed exclusively by `WikiFarmMultiVersion::setWikiVersion()` — never edited by hand.
+
+```php
+<?php
+return [
+    // 'examplewiki' => '1.45',
+];
+```
+
+Wikis not listed in this file inherit the farm default. The file is included with `@include` (suppressing missing-file errors) so a completely empty or absent file is handled gracefully.
+
+## WikiFarmMultiVersion API
+
+### getWikiVersion()
+
+```php
+public static function getWikiVersion(string $dbname): string
+```
+
+Reads `wikiVersions.php` and returns the version string for `$dbname`, or the farm default if no override exists. This is a lightweight read used for display purposes (e.g., in the ManageWiki core form).
+
+### setWikiVersion()
+
+```php
+public static function setWikiVersion(string $dbname, ?string $version): void
+```
+
+Atomically writes a new version mapping into `wikiVersions.php`. The update strategy:
+
+1. Reads the current contents of `wikiVersions.php`.
+2. If `$version` is `null` or equals the current farm default, removes the entry for `$dbname` (reverting to default).
+3. Otherwise, sets `$versions[$dbname] = $version`.
+4. Writes the new array to a temporary file named `wikiVersions.php.tmp.{pid}` using `LOCK_EX`.
+5. Atomically replaces `wikiVersions.php` with the temp file using `rename()`.
+6. Deletes the wiki's CreateWiki cache file (`cw_cache/{dbname}.php`) to force a cache rebuild on the next request.
+
+This approach ensures that concurrent HTTP requests never see a half-written file.
+
+<Warning>
+  Changing a wiki's MediaWiki version requires the `managewiki-restricted` right, which is held only by stewards and tech team members. Version changes should be tested on the **beta realm** (`betaoasis.xyz`) before being applied to a production wiki. Running incompatible extensions under a new MediaWiki version can cause fatal errors that lock out the wiki's administrators.
+</Warning>
+
+### onCreateWikiPhpBuilder()
+
+```php
+public static function onCreateWikiPhpBuilder(string $dbname, array &$cacheData): void
+```
+
+This hook fires whenever CreateWiki rebuilds the `databases.php` cache entry for a wiki. It injects the wiki's `wikiVersions.php` override — if one exists — into `$cacheData['v']`, ensuring that the fast-path `getMediaWikiVersion()` lookup from the databases cache returns the correct version without re-reading `wikiVersions.php` on every request.
+
+## Filesystem Path Resolution
+
+`MirahezeFunctions::getMediaWiki(string $file): string` resolves the full filesystem path to a MediaWiki file for the current wiki's version:
+
+```php
+public static function getMediaWiki(string $file): string {
+    $IP = rtrim(self::MEDIAWIKI_DIRECTORY, '/');   // /srv/mediawiki/versions
+    $versionPath = $IP . '/' . self::getMediaWikiVersion();
+    if (is_dir($versionPath)) {
+        $IP = $versionPath;
+    }
+    chdir($IP);
+    putenv("MW_INSTALL_PATH=$IP");
+    return $IP . '/' . $file;
+}
+```
+
+`MEDIAWIKI_DIRECTORY` is `/srv/mediawiki/versions`. Each version track has its own subdirectory — e.g., `/srv/mediawiki/versions/1.45/` and `/srv/mediawiki/versions/1.46/`. If the resolved version directory does not exist (e.g., `1.46` has not yet been deployed to a server), the function falls back to `MEDIAWIKI_DIRECTORY` itself.
+
+## Pinning a Wiki to a Specific Version
+
+<Steps>
+  <Step title="Verify the version exists on the server">
+    The ManageWiki core form only lists versions for which a directory exists under `/srv/mediawiki/versions/`. Check with a steward or tech team member if the desired version is not available in the selector.
+  </Step>
+  <Step title="Navigate to Special:ManageWiki/core">
+    Go to `Special:ManageWiki/core` on the target wiki (or on metawiki for a different wiki, entering its database name). You must hold the `managewiki-restricted` right or be acting as a steward.
+  </Step>
+  <Step title="Select the MediaWiki version">
+    In the **MediaWiki version** dropdown (added by `onManageWikiCoreAddFormFields`), select the desired version. The dropdown is disabled for users without `managewiki-restricted`.
+  </Step>
+  <Step title="Save the form">
+    Click **Save**. The `onManageWikiCoreFormSubmission` handler calls `WikiFarmMultiVersion::setWikiVersion($dbname, $mediawikiVersion)` immediately, updating `wikiVersions.php` atomically and invalidating the wiki's CreateWiki cache. The new version takes effect on the very next request to that wiki.
+  </Step>
+  <Step title="Verify the change">
+    Reload the wiki and check `Special:Version`. The MediaWiki version displayed should match the version you selected. If extensions are incompatible with the new version, errors will surface here.
+  </Step>
+</Steps>
+
+<Tip>
+  To revert a wiki to the farm default version, select the **stable** version in the ManageWiki core form and save. `setWikiVersion()` will remove the wiki's entry from `wikiVersions.php` entirely, so it inherits the farm default automatically going forward.
+</Tip>

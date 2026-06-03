@@ -1,0 +1,159 @@
+---
+title: "Object Storage, Media Uploads, and File Delivery Setup"
+sidebarTitle: "Storage"
+description: "Cloudflare R2 object storage for WikiOasis via the AWS MediaWiki extension: bucket layout, CDN delivery, private wikis, and supported file types."
+---
+
+All user-uploaded media on WikiOasis is stored in Cloudflare R2, accessed through the MediaWiki AWS extension which provides an S3-compatible API layer. Every wiki gets its own subdirectory inside a single shared bucket, while a small set of global containers spans all wikis for shared social features. Files are served through a CDN domain rather than directly from the bucket origin, ensuring low-latency delivery without exposing bucket credentials or internal endpoints.
+
+## Storage Backend Overview
+
+<CardGroup cols={2}>
+  <Card title="Bucket" icon="bucket">
+    **wikioasis-media** — single R2 bucket hosting all wiki media. The
+    `AmazonS3FileBackend` is configured with `use_path_style_endpoint = true`
+    and a 30-second HTTP timeout.
+  </Card>
+  <Card title="CDN Domain" icon="globe">
+    **https://cdn.wikioasis.org** — all public file URLs are rewritten to this
+    domain via `$wgAWSBucketDomain`. Cloudflare's CDN caches files at edge
+    nodes; purges are handled by the CFCachePurge extension.
+  </Card>
+  <Card title="Per-Wiki Path" icon="folder-tree">
+    `$wgAWSBucketTopSubdirectory = '/' . $wgDBname` — each wiki's files live
+    under `wikioasis-media/{dbname}/`, providing clean namespace separation
+    and enabling per-wiki access control.
+  </Card>
+  <Card title="Credentials" icon="key">
+    `$wgR2Key`, `$wgR2Secret`, and `$wgR2Endpoint` are loaded exclusively from
+    `PrivateSettings.php`. The endpoint is passed directly to the S3 backend
+    as Cloudflare R2's S3-compatible API URL.
+  </Card>
+</CardGroup>
+
+## Upload Flow
+
+<Steps>
+  <Step title="User uploads a file">
+    The editor submits a file via `Special:Upload` (or the UploadWizard
+    extension). MediaWiki validates the MIME type against `$wgFileExtensions`
+    and enforces the 128 MB maximum upload size
+    (`$wgMaxUploadSize = 1024 * 1024 * 128`).
+  </Step>
+  <Step title="MediaWiki processes the file">
+    After validation, MediaWiki generates thumbnails via ImageMagick
+    (`/usr/bin/convert`). For video/audio files, FFmpeg
+    (`/usr/bin/ffmpeg`) handles transcoding. Thumbnail steps are
+    pre-defined at 20, 40, 60, 120, 250, 330, 500, 960, 1280, 1920, and
+    3840 pixels wide.
+  </Step>
+  <Step title="AWS extension writes to R2">
+    The `AmazonS3FileBackend` uploads the original file and all generated
+    thumbnails to `wikioasis-media/{dbname}/` in the R2 bucket. Hash-based
+    subdirectories (`$wgAWSRepoHashLevels = 2`) distribute files to avoid
+    flat-directory performance issues.
+  </Step>
+  <Step title="CDN serves the file">
+    Subsequent requests for the file are served from
+    `https://cdn.wikioasis.org/{dbname}/...` via Cloudflare's CDN edge.
+    The origin (R2 bucket) is only hit on cache misses or after a CFCachePurge
+    invalidation.
+  </Step>
+</Steps>
+
+## Supported File Types
+
+The default `$wgFileExtensions` list covers images, documents, audio, video, and 3D formats:
+
+| Category | Extensions |
+|----------|-----------|
+| Raster images | `gif`, `jpg`, `jpeg`, `png`, `webp` |
+| Vector / document | `svg`, `pdf`, `djvu` |
+| Audio | `ogg`, `oga`, `mp3`, `wav`, `flac`, `midi`, `mid` |
+| Video | `ogv`, `mp4`, `webm` |
+| 3D model | `stl` |
+
+## Global Shared Containers
+
+Three containers are mounted outside any per-wiki path and are shared across
+the entire farm:
+
+| Container | Bucket Path | Used By |
+|-----------|-------------|---------|
+| `avatars` | `wikioasis-media/avatars` | SocialProfile user avatars |
+| `awards` | `wikioasis-media/awards` | SocialProfile user awards |
+| `upv2avatars` | `wikioasis-media/upv2avatars` | UserProfileV2 avatars |
+
+Per-wiki variants (e.g. `{dbname}-avatars`) are also registered so that
+wiki-scoped avatar uploads land in `wikioasis-media/{dbname}/avatars/` rather
+than the global container.
+
+`$wgUserProfileV2UseGlobalAvatars = true` and
+`$wgUserProfileGlobalUploadBaseUrl = "https://cdn.wikioasis.org/upv2avatars/"` 
+ensure UserProfileV2 reads avatars from the global CDN URL regardless of which
+wiki the request originates from.
+
+## Private Wiki Storage
+
+When a wiki is marked private (`$cwPrivate = true`), the upload path is
+rewritten and public bucket access is revoked for that wiki's files:
+
+```php
+if ( $cwPrivate ) {
+    $wmgUploadHostname = false;
+    $wgUploadPath = '/w/img_auth.php';
+} else {
+    $wgGroupPermissions['*']['read'] = true;
+}
+```
+
+A `SetupAfterCache` hook removes the `url` key from every public zone in
+`$wgLocalFileRepo['zones']`, which prevents MediaWiki from generating direct
+CDN URLs for files on private wikis.
+
+<Note>
+  On private wikis, every file request is routed through `img_auth.php`, which
+  checks the user's session and MediaWiki permissions before streaming the file.
+  This means Cloudflare CDN caching is bypassed for all private wiki media —
+  every request hits the application server.
+</Note>
+
+## SocialProfile and UserProfileV2 Backends
+
+The `$wgFileBackends['s3']['containerPaths']` map wires up the global social
+containers directly to R2 paths, bypassing per-wiki subdirectory routing:
+
+```php
+$wgFileBackends['s3']['containerPaths'] = [
+    'avatars'    => 'wikioasis-media/avatars',
+    'awards'     => 'wikioasis-media/awards',
+    'upv2avatars' => 'wikioasis-media/upv2avatars',
+    "{$wgDBname}-avatars"    => "wikioasis-media/{$wgDBname}/avatars",
+    "{$wgDBname}-upv2avatars" => "wikioasis-media/{$wgDBname}/upv2avatars",
+];
+```
+
+The `defaultAcl = 'public-read'` setting on the S3 backend means newly
+uploaded objects are publicly readable by default; the `SetupAfterCache` hook
+overrides this for private wikis by stripping zone URLs at runtime.
+
+## Sitemaps
+
+Sitemaps are generated per-wiki and delivered via `sitemap.php`. The index
+file path follows the pattern:
+
+```
+sitemaps/{dbname}/sitemap-index-{dbname}.xml
+```
+
+Files are streamed from `$wmgUploadHostname` (`cdn.wikioasis.org`), meaning
+sitemaps are also served through the CDN for public wikis. On private wikis
+`$wmgUploadHostname` is set to `false`, disabling sitemap generation.
+
+## DataDump XML Exports
+
+Wiki XML dumps produced by the DataDump extension are stored to
+`/var/www/dumps/` on the application server and served as gzip-compressed
+archives. Dump files are not uploaded to R2 — they remain on local disk and
+are accessible via the `Special:DataDump` interface to users with the
+`view-dump` permission.

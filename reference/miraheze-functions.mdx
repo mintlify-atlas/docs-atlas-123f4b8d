@@ -1,0 +1,353 @@
+---
+title: "MirahezeFunctions Class — WikiOasis PHP Reference"
+sidebarTitle: "MirahezeFunctions"
+description: "Complete API reference for the MirahezeFunctions class: constants, properties, static methods, instance methods, and practical usage examples."
+---
+
+`MirahezeFunctions` is the single most important PHP class in the WikiOasis farm. Instantiated once per request inside `LocalSettings.php` as `$wi = new MirahezeFunctions()`, it bootstraps the entire wiki context — detecting the current database name, resolving the correct MediaWiki version, loading per-wiki configuration from the CreateWiki cache, populating `SiteConfiguration` settings, and queueing extension files. Every other configuration file in the farm depends on the state it produces. Understanding this class means understanding how WikiOasis works from the inside out.
+
+## Constants
+
+<Note>
+  Constants marked **public** are accessible from outside the class. Constants marked **private** are used internally and listed here for documentation purposes only.
+</Note>
+
+| Constant | Visibility | Value | Description |
+|---|---|---|---|
+| `ALLOWED_DOMAINS['default']` | private | `['wikioasis.org', 'skywiki.org']` | Production domains accepted as valid wiki suffixes |
+| `ALLOWED_DOMAINS['beta']` | private | `['betaoasis.xyz']` | Beta/staging domains |
+| `BETA_HOSTNAME` | private | `'staging11'` | Hostname of the beta server; used to detect realm |
+| `CACHE_DIRECTORY` | **public** | `'/srv/mediawiki/cw_cache'` | Directory where CreateWiki and config cache files live |
+| `CONFIG_DIRECTORY` | private | `'/srv/mediawiki/config'` | Directory containing `LocalSettings.php` and related files |
+| `CENTRAL_DATABASE['default']` | private | `'metawiki'` | Central wiki DB for production |
+| `CENTRAL_DATABASE['beta']` | private | `'metawikibeta'` | Central wiki DB for beta |
+| `DEFAULT_SERVER['default']` | private | `'wikioasis.org'` | Default domain for production wikis |
+| `DEFAULT_SERVER['beta']` | private | `'betaoasis.xyz'` | Default domain for beta wikis |
+| `SHARED_DOMAIN['default']` | private | `'accounts.wikioasis.org'` | CentralAuth shared login domain (production) |
+| `SHARED_DOMAIN['beta']` | private | `'accounts.betaoasis.xyz'` | CentralAuth shared login domain (beta) |
+| `GLOBAL_DATABASE['default']` | private | `'wikidb'` | Global cross-wiki database (production) |
+| `GLOBAL_DATABASE['beta']` | private | `'wikidbbeta'` | Global cross-wiki database (beta) |
+| `MEDIAWIKI_DIRECTORY` | private | `'/srv/mediawiki/versions'` | Root of versioned MediaWiki installs |
+| `MEDIAWIKI_VERSIONS['alpha']` | **public** | `'1.46'` | Alpha MediaWiki branch |
+| `MEDIAWIKI_VERSIONS['beta']` | **public** | `'1.45'` | Beta MediaWiki branch |
+| `MEDIAWIKI_VERSIONS['stable']` | **public** | `'1.45'` | Stable MediaWiki branch (farm default) |
+| `SUFFIXES['wiki']` | **public** | `['wikioasis.org', 'skywiki.org']` | DB suffix → accepted domains mapping (production) |
+| `SUFFIXES['wikibeta']` | **public** | `['betaoasis.xyz']` | DB suffix → accepted domains mapping (beta) |
+
+## Public Properties
+
+These are declared `public readonly` on the instance (`$wi`) created in `LocalSettings.php`.
+
+<ResponseField name="dbname" type="string">
+  The database name for the current wiki (e.g. `examplewiki`). Resolved by `getCurrentDatabase()` during construction and immutable thereafter.
+</ResponseField>
+
+<ResponseField name="realm" type="string">
+  Either `'default'` (production) or `'beta'`. Derived from whether `$dbname` ends with the `wiki` or `wikibeta` suffix.
+</ResponseField>
+
+<ResponseField name="server" type="string">
+  The full HTTPS server URL for the current wiki (e.g. `https://example.wikioasis.org`). Resolved by `getServer()` during construction.
+</ResponseField>
+
+<ResponseField name="sitename" type="string">
+  The human-readable site name of the current wiki (e.g. `"My Example Wiki"`). Resolved from the CreateWiki cache during construction.
+</ResponseField>
+
+<ResponseField name="version" type="string">
+  The MediaWiki version string active for this wiki (e.g. `'1.45'`). Resolved by `getMediaWikiVersion()` during construction.
+</ResponseField>
+
+<ResponseField name="wikiDBClusters" type="array">
+  A map of `dbname => cluster` for all known wikis (including deleted). Populated from both `databases.php` and `deleted.php` cache files.
+</ResponseField>
+
+<ResponseField name="missing" type="bool">
+  `true` if the current wiki does not appear in `$wgConf->wikis`. When `true`, the farm has already served a 410 error page — this property is informational for downstream code.
+</ResponseField>
+
+## Public Static Properties
+
+<ResponseField name="$disabledExtensions" type="array">
+  A globally writeable map of `extensionKey => reason` for extensions that have been globally disabled by administrators. Populated before `loadExtensions()` runs; `handleDisabledExtensions()` uses it to annotate the ManageWiki UI and prevent re-enabling.
+</ResponseField>
+
+## Static Methods
+
+<Accordion title="Database & Realm">
+
+<ParamField path="getLocalDatabases()" type="static: array">
+  Returns the merged list of all active and deleted database names. Sets `$wgLocalDatabases` as a side effect. Uses a static cache so it is only computed once per process. Called by `setupSiteConfiguration()`.
+</ParamField>
+
+<ParamField path="readDbListFile(string $listFile, bool $onlyDBs = true, ?string $database = null, bool $fromServer = false)" type="static: array|string|bool">
+  Reads a PHP cache file from `CACHE_DIRECTORY` (e.g. `databases.php`, `deleted.php`). When `$database` is provided and `$fromServer` is `true`, reverse-looks up a DB name from a server URL. When `$onlyDBs` is `true`, returns a flat array of DB name strings; otherwise returns the full associative data array. Returns `[]` when the cache file is missing or empty. Respects `$wgDatabaseClustersMaintenance` — if the current wiki's cluster is in maintenance, it calls `DatabaseMaintenance.php` immediately.
+</ParamField>
+
+<ParamField path="getRealm(?string $database = null)" type="static: string">
+  Returns `'default'` if `$database` ends with the `wiki` suffix, or `'beta'` otherwise. Defaults to the current database when `$database` is `null`.
+</ParamField>
+
+<ParamField path="getCurrentSuffix()" type="static: string">
+  Detects which DB suffix is active by comparing the realm's default server against the `SUFFIXES` map. Returns `'wiki'` for production, `'wikibeta'` for beta, with `'wiki'` as a hard fallback.
+</ParamField>
+
+<ParamField path="getCurrentDatabase(bool $ignorePrimary = false)" type="static: string">
+  Returns the current wiki's database name using several resolution strategies in order: (1) `MW_DB` constant (CLI), (2) shared-domain path prefix (`accounts.wikioasis.org`), (3) reverse lookup via `databases.php` cache, (4) subdomain + suffix decomposition from `HTTP_HOST`. Returns an empty string if resolution fails.
+</ParamField>
+
+<ParamField path="getDatabaseClusters()" type="static: array">
+  Returns a flat map of `dbname => cluster` for every wiki in both `databases.php` and `deleted.php`. Used to populate `$wi->wikiDBClusters`.
+</ParamField>
+
+<ParamField path="getPrimaryDomain(string $database)" type="static: string">
+  Reads the `'d'` key from `databases.php` for `$database`. Falls back to `DEFAULT_SERVER[realm]` if no custom primary domain is stored.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Server & Domain">
+
+<ParamField path="getServers(?string $database = null, bool $deleted = false)" type="static: array|string">
+  When `$database` is provided, returns the single server URL string for that wiki. When `null`, returns the full `dbname => URL` map for all wikis. Respects custom domains stored in the `'u'` key and primary domains in the `'d'` key of the cache. Includes deleted wikis in the map when `$deleted` is `true`.
+</ParamField>
+
+<ParamField path="getDefaultServer(?string $database = null)" type="static: string">
+  Returns the plain domain string (without scheme) for the realm's default server — `'wikioasis.org'` or `'betaoasis.xyz'`.
+</ParamField>
+
+<ParamField path="getServer()" type="static: string">
+  Returns the server URL for the current wiki by calling `getServers()` with the current database name. Used to set `$wi->server` during construction.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Site Names & Versions">
+
+<ParamField path="getSiteNames()" type="static: array">
+  Returns a `dbname => sitename` map for all wikis (active + deleted), sourced from the `'s'` key in cache files. Includes a `'default'` key set to `'No sitename set.'`.
+</ParamField>
+
+<ParamField path="getSiteName()" type="static: string">
+  Returns the site name for the current wiki by looking up `getSiteNames()` with `$currentDatabase`. Falls back to the `'default'` entry.
+</ParamField>
+
+<ParamField path="getDefaultMediaWikiVersion()" type="static: string">
+  Returns the string key (`'stable'` or `'beta'`) that identifies the farm default version. Returns `'beta'` on the `staging11` host when that key exists in `MEDIAWIKI_VERSIONS`, otherwise `'stable'`.
+</ParamField>
+
+<ParamField path="getMediaWikiVersion(?string $database = null)" type="static: string">
+  Resolves the MediaWiki version string for a wiki. Resolution order: (1) `MIRAHEZE_WIKI_VERSION` environment variable, (2) `wikiVersions.php` fast-path file, (3) `'v'` key in `databases.php` cache, (4) farm default. Also handles CLI version detection from `SCRIPT_NAME` path depth. Returns a version number string like `'1.45'`.
+</ParamField>
+
+<ParamField path="getMediaWiki(string $file)" type="static: string">
+  Resolves the full filesystem path to a file under the active MediaWiki version directory. Sets `$IP` and `MW_INSTALL_PATH` as side effects. Returns a path like `/srv/mediawiki/versions/1.45/index.php`.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Configuration & Cache">
+
+<ParamField path="getCacheArray()" type="static: array">
+  Reads the per-wiki CreateWiki cache file at `CACHE_DIRECTORY/{dbname}.php`. Returns the full PHP array (containing `core`, `states`, `settings`, `namespaces`, `permissions`, `extensions` keys) or `[]` if not found.
+</ParamField>
+
+<ParamField path="getConfigGlobals()" type="static: array">
+  The main configuration resolver. Tries to read a pre-built config from `config-{dbname}.php` in the cache directory; if stale or absent, it merges the ManageWiki config cache into `$wgConf->settings`, resolves all globals via `getConfigForCaching()`, writes the result back to cache, and returns the globals array. Cache validity is determined by `mtime` comparison against `LocalSettings.php`, `ManageWikiExtensions.php`, `ManageWikiNamespaces.php`, `ManageWikiSettings.php`, `Defines.php`, and the per-wiki cache file.
+</ParamField>
+
+<ParamField path="getConfigForCaching()" type="static: array">
+  Builds the resolved configuration array by calling `$wgConf->getAll()` with the current wiki's suffix, language, site params, and all active wiki tags (realm, MW version, states, active extensions as `ext-*` prefixed tags).
+</ParamField>
+
+<ParamField path="writeToCache(string $cacheShard, array $configObject)" type="static: void">
+  Atomically writes a PHP cache file to `CACHE_DIRECTORY`. Uses `tempnam()` + `rename()` to prevent partial reads. Calls `opcache_invalidate()` after writing to ensure the new content is picked up immediately.
+</ParamField>
+
+<ParamField path="readFromCache(string $confCacheFile, string $type, int $confActualMtime)" type="static: array|null">
+  Reads a cache shard file and returns the value at key `$type` if the stored `mtime` matches `$confActualMtime`. Returns `null` on a cache miss or stale entry.
+
+  | Parameter | Type | Description |
+  |---|---|---|
+  | `$confCacheFile` | `string` | Full path to the config cache file |
+  | `$type` | `string` | Key to extract (`'globals'` or `'extensions'`) |
+  | `$confActualMtime` | `int` | Expected modification timestamp |
+</ParamField>
+
+<ParamField path="getManageWikiConfigCache()" type="static: array">
+  Translates the CreateWiki cache array into a `$wgConf->settings`-compatible array. Handles: language code, wiki states (`cwPrivate`, `cwClosed`, etc.), per-wiki settings, namespace definitions (searchable, subpages, content model, protection, aliases, extra namespaces), and group permissions (permissions, addgroups, removegroups, autopromote/autopromoteonce).
+</ParamField>
+
+<ParamField path="getCacheDirectory()" type="static: string">
+  Returns the `CACHE_DIRECTORY` constant value (`'/srv/mediawiki/cw_cache'`). A stable accessor for code that needs the cache path without referencing the constant directly.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Extensions">
+
+<ParamField path="getActiveExtensions(bool $useConfigCache = true)" type="static: array">
+  Returns the list of extension names currently enabled for the wiki, after filtering out any globally disabled extensions from `$disabledExtensions`. When `$useConfigCache` is `true`, tries to return the `'extensions'` key from the config cache before falling back to a full computation against `$wgManageWikiExtensions` and the CreateWiki cache.
+</ParamField>
+
+<ParamField path="handleDisabledExtensions()" type="static: void">
+  Iterates over `$disabledExtensions` and, for each entry, injects a bold note into the ManageWiki UI help text and restricts the extension to require `managewiki-restricted` to re-enable. Called by `loadExtensions()` before the extension queue is built.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Hooks">
+
+<ParamField path="onGenerateDatabaseLists(array &$databaseLists)" type="static: void">
+  Hook handler for `GenerateDatabaseLists`. Queries `cw_wikis` directly via the global database and builds the complete set of named lists — `active`, `closed`, `databases`, `deleted`, `inactive`, `public`, `private`, and per-version lists (`stable-wikis`, `beta-wikis`, `alpha-wikis`). Writes into `$databaseLists` by reference.
+</ParamField>
+
+<ParamField path="onManageWikiCoreAddFormFields(IContextSource $context, ModuleFactory $moduleFactory, string $dbname, bool $ceMW, array &$formDescriptor)" type="static: void">
+  Hook handler that injects two fields into the Special:ManageWiki/core form: a `primary-domain` select (restricted to `managewiki-restricted`) and a `mediawiki-version` select (filtered to only show versions that exist on disk). Both fields default to the wiki's current values.
+</ParamField>
+
+<ParamField path="onManageWikiCoreFormSubmission(IContextSource $context, ModuleFactory $moduleFactory, string $dbname, array $formData)" type="static: void">
+  Hook handler that persists `mediawiki-version` and `primary-domain` changes submitted via Special:ManageWiki/core. For version changes, calls `WikiFarmMultiVersion::setWikiVersion()` for immediate effect and stores the new value via `ManageWikiCore::setExtraFieldData()`.
+</ParamField>
+
+<ParamField path="onMediaWikiServices()" type="static: void">
+  Hook handler for `MediaWikiServices`. Applies the resolved config globals to `$GLOBALS` by iterating over the `globals` array set during bootstrap. Skips keys that have a `+` merge variant in `$wgConf->settings`, and always skips `wgArticlePath`, `wgServer`, and `wgManageWikiPermissionsAdditionalRights`. Unsets `$GLOBALS['globals']` when done.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Misc">
+
+<ParamField path="isMissing()" type="static: bool">
+  Returns `true` if the current database is not present in `$wgConf->wikis`. This indicates the wiki does not exist in the CreateWiki registry and error handling should take over.
+</ParamField>
+
+<ParamField path="setupSiteConfiguration()" type="static: void">
+  Initializes `$wgConf` as a new `SiteConfiguration` instance, sets `$wgConf->suffixes` from the `SUFFIXES` constant keys, and populates `$wgConf->wikis` by calling `getLocalDatabases()`. Called at the very beginning of the constructor.
+</ParamField>
+
+</Accordion>
+
+## Instance Methods
+
+These methods are called on the `$wi` instance object.
+
+<Accordion title="Constructor">
+
+<ParamField path="__construct()" type="void">
+  Initializes the full wiki context in a fixed sequence:
+
+  1. Calls `setupSiteConfiguration()` to prepare `$wgConf`.
+  2. Resolves `$this->dbname` via `getCurrentDatabase()`.
+  3. Validates that the DB suffix matches the expected realm for the current server; exits with a 410 or CLI error if not.
+  4. Populates `$this->wikiDBClusters` from `getDatabaseClusters()`.
+  5. Sets `$this->server`, `$this->sitename`, `$this->missing`, `$this->realm`, and `$this->version`.
+  6. Calls `setDatabase()`, `setServers()`, and `setSiteNames()` to propagate values into `$wgConf`.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Identity & Domain">
+
+<ParamField path="getAllowedDomains()" type="array">
+  Returns the list of allowed domains for the current realm — `['wikioasis.org', 'skywiki.org']` in production or `['betaoasis.xyz']` in beta.
+</ParamField>
+
+<ParamField path="getCentralDatabase()" type="string">
+  Returns `'metawiki'` (production) or `'metawikibeta'` (beta).
+</ParamField>
+
+<ParamField path="getGlobalDatabase()" type="string">
+  Returns `'wikidb'` (production) or `'wikidbbeta'` (beta). This is the cross-wiki database used for CentralAuth, CreateWiki, ManageWiki, GlobalBlocking, and other global tables.
+</ParamField>
+
+<ParamField path="getIncidentsDatabase()" type="string">
+  Returns the realm-appropriate incidents database name (mapped from the private `INCIDENTS_DATABASE` constant).
+</ParamField>
+
+<ParamField path="isBeta()" type="bool">
+  Returns `true` if `$this->server` ends with `.betaoasis.xyz`.
+</ParamField>
+
+<ParamField path="getSharedDomain()" type="string">
+  Returns `'accounts.wikioasis.org'` or `'accounts.betaoasis.xyz'` — the CentralAuth shared login domain for the current realm.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Configuration Setters">
+
+<ParamField path="setDatabase()" type="void">
+  Sets `$wgConf->settings['wgDBname'][$dbname]` and the global `$wgDBname`. Also updates `$wgVirtualDomainsMapping` for the `virtual-createwiki` and `virtual-managewiki` virtual domains to point at the correct global database.
+</ParamField>
+
+<ParamField path="setServers()" type="void">
+  Writes the full `dbname => URL` server map into `$wgConf->settings['wgServer']` and sets the global `$wgServer` to the current wiki's URL.
+</ParamField>
+
+<ParamField path="setSiteNames()" type="void">
+  Writes the full `dbname => sitename` map into `$wgConf->settings['wgSitename']` and sets the global `$wgSitename` to the current wiki's site name.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Settings & Extensions">
+
+<ParamField path="getSettingValue(string $setting, string $wiki = 'default')" type="mixed">
+  Returns the value of a per-wiki ManageWiki setting. Checks the CreateWiki cache array's `settings` key first; falls back to `$wgConf->get()`.
+
+  | Parameter | Type | Description |
+  |---|---|---|
+  | `$setting` | `string` | The MediaWiki global variable name (e.g. `'wgMaxArticleSize'`) |
+  | `$wiki` | `string` | The wiki DB name or `'default'` for the fallback |
+</ParamField>
+
+<ParamField path="isExtensionActive(string $extension)" type="bool">
+  Returns `true` if the named extension is in the active extensions list for the current wiki.
+</ParamField>
+
+<ParamField path="isAnyOfExtensionsActive(string ...$extensions)" type="bool">
+  Returns `true` if at least one of the provided extension names is active. Useful for conditional blocks that apply to multiple related extensions.
+</ParamField>
+
+<ParamField path="isAllOfExtensionsActive(string ...$extensions)" type="bool">
+  Returns `true` only if every provided extension name is active. Useful for features that require multiple extensions simultaneously.
+</ParamField>
+
+<ParamField path="loadExtensions()" type="void">
+  The main extension loader. Reads the per-wiki CreateWiki cache, resolves the extension-list cache for the active MediaWiki version (building it from `glob()` + `ExtensionProcessor` on a cache miss), calls `handleDisabledExtensions()`, then queues each active extension's JSON manifest file via `ExtensionRegistry::queue()`.
+</ParamField>
+
+</Accordion>
+
+## Usage Example
+
+```php
+// Instantiated once in LocalSettings.php
+$wi = new MirahezeFunctions();
+
+// Check if an extension is active
+if ( $wi->isExtensionActive( 'VisualEditor' ) ) {
+    $wgVisualEditorAvailableNamespaces = [ NS_MAIN => true ];
+}
+
+// Resolve the current wiki's MediaWiki version
+$version = MirahezeFunctions::getMediaWikiVersion( $wgDBname );
+
+// Get per-wiki setting value from ManageWiki
+$value = $wi->getSettingValue( 'wgMaxArticleSize' );
+
+// Check realm
+if ( $wi->isBeta() ) {
+    $wgSomeFeatureEnabled = false;
+}
+
+// Require two extensions to be active simultaneously
+if ( $wi->isAllOfExtensionsActive( 'Wikibase', 'WikibaseLexeme' ) ) {
+    // lexeme-specific config
+}
+```
+
+<Tip>
+  Because `MirahezeFunctions` is instantiated at the top of `LocalSettings.php`, `$wi` is available throughout the entire configuration file tree. All extension config files (e.g. `Wikibase.php`) rely on `$wi->isExtensionActive()` before applying settings.
+</Tip>

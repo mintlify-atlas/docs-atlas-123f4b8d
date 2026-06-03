@@ -1,0 +1,183 @@
+---
+title: "PrivateSettings.php: Credentials and Secrets Reference"
+sidebarTitle: "Private Settings"
+description: "PrivateSettings.php: why it lives outside the repo, R2/S3 and OAuth key setup, and required variables with types — DB credentials, secret key, and Sentry DSN."
+---
+
+`PrivateSettings.php` is the first file included by `LocalSettings.php` — loaded via `require_once "$IP/config/PrivateSettings.php"` before any other configuration runs. It is **not part of the Git repository** and is deployed separately to `/srv/mediawiki/config/PrivateSettings.php` on each server. Its purpose is to hold every piece of information that would be dangerous to expose in version control: database passwords, secret keys, object-storage credentials, Sentry DSN, and OAuth private key paths. Without this file present on disk, the entire farm fails to start.
+
+<Warning>
+  **Never commit credentials to the repository.** `PrivateSettings.php` must remain outside of version control at all times. If any credential in this file is accidentally exposed, rotate it immediately: regenerate `$wgSecretKey`, change database passwords, roll R2 API keys, and revoke the OAuth private key.
+</Warning>
+
+<Note>
+  The OAuth **public** key (`OAuth.key.pub`) **is** committed to the repository at `/srv/mediawiki/config/OAuth.key.pub` and referenced by `$wgOAuth2PublicKey`. Only the private key (`OAuth.key`) is kept in `PrivateSettings.php` via `$wgOAuth2PrivateKey`. This is intentional — public keys are designed to be distributable.
+</Note>
+
+## Required Variables
+
+<ParamField body="$wgDBuser" type="string" required>
+  The MySQL/MariaDB username used by MediaWiki to connect to the database cluster. This user must have `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `INDEX`, `ALTER` privileges on all wiki databases. Referenced in `Database.php` as `$primaryServer['user']`.
+</ParamField>
+
+<ParamField body="$wgDBpassword" type="string" required>
+  The plaintext password for `$wgDBuser`. `Database.php` reads this into `$wgLBFactoryConf`'s `serverTemplate` and `hostsByName` entries so that `LBFactoryMulti` can authenticate to every cluster node.
+</ParamField>
+
+<ParamField body="$wgDBservers" type="array" required>
+  An array of server definition arrays. `Database.php` reads `$wgDBservers[0]` as the primary server definition. Each entry should contain at minimum:
+  ```php
+  [
+      'host'     => 'db-c1-us-east-021',
+      'user'     => '...',
+      'password' => '...',
+      'type'     => 'mysql',
+      'flags'    => DBO_DEFAULT,
+  ]
+  ```
+  If `$wgDBservers[0]` is not present, `Database.php` falls back to the hardcoded host `db-c1-us-east-021` with the top-level `$wgDBuser` / `$wgDBpassword` values.
+</ParamField>
+
+<ParamField body="$wgSecretKey" type="string" required>
+  A 64-character hex string used by MediaWiki for HMAC signing of session tokens, edit tokens, and other security-sensitive values. Also passed as `'secret'` to `LBFactoryMulti` in `Database.php`. Generate with: `openssl rand -hex 32`.
+</ParamField>
+
+<ParamField body="$wgR2Key" type="string" required>
+  The Cloudflare R2 API access key ID. Used to construct `$wgAWSCredentials['key']` in `LocalSettings.php`. This key must have `Object Read & Write` permissions on the `wikioasis-media` bucket.
+</ParamField>
+
+<ParamField body="$wgR2Secret" type="string" required>
+  The Cloudflare R2 API secret access key paired with `$wgR2Key`. Used as `$wgAWSCredentials['secret']`. Together with the key, this authenticates all S3-API calls to Cloudflare R2 from the `AmazonS3FileBackend`.
+</ParamField>
+
+<ParamField body="$wgR2Endpoint" type="string" required>
+  The full HTTPS endpoint URL for the Cloudflare R2 S3-compatible API, in the form `https://<account-id>.r2.cloudflarestorage.com`. Passed as `'endpoint'` in `$wgFileBackends['s3']`. The backend also sets `'use_path_style_endpoint' => true` so bucket names are path components rather than subdomains.
+</ParamField>
+
+<ParamField body="$sentryDSN" type="string" required>
+  The Sentry Data Source Name (DSN) URL for error reporting. Loaded by `Sentry.php` (included from `LocalSettings.php`) and used to initialise the Sentry PHP SDK. Events from all wikis are routed to this single DSN. Format: `https://<key>@<host>/<project-id>`.
+</ParamField>
+
+## R2/S3 Storage Configuration
+
+The storage layer is built on Cloudflare R2 using an S3-compatible API. `LocalSettings.php` assembles the full backend configuration from the credentials supplied by `PrivateSettings.php`:
+
+```php
+$wgAWSCredentials = [
+    'key'    => $wgR2Key,
+    'secret' => $wgR2Secret,
+    'token'  => false,
+];
+$wgAWSRegion    = 'auto';
+$wgAWSBucketName = 'wikioasis-media';
+$wgAWSBucketTopSubdirectory = '/' . $wgDBname;
+$wgAWSBucketDomain = 'https://cdn.wikioasis.org';
+```
+
+Every wiki's files land in the `wikioasis-media` bucket under a per-wiki prefix (`/{$wgDBname}`), so `metawiki`'s files live at `wikioasis-media/metawiki/`, `loginwiki`'s at `wikioasis-media/loginwiki/`, and so on. The CDN domain `https://cdn.wikioasis.org` is the public URL served through Cloudflare in front of R2.
+
+### Global Containers
+
+Three containers are shared across **all** wikis (no per-wiki prefix):
+
+| Container | Bucket Path | Usage |
+|---|---|---|
+| `avatars` | `wikioasis-media/avatars` | SocialProfile user avatars |
+| `awards` | `wikioasis-media/awards` | SocialProfile user awards |
+| `upv2avatars` | `wikioasis-media/upv2avatars` | UserProfileV2 avatars |
+
+These are mapped in `$wgFileBackends['s3']['containerPaths']` and exposed via `$wgAWSRepoZones` entries with `'isPublic' => true`.
+
+### Private Wiki Storage
+
+For private wikis (`$cwPrivate = true`), the `SetupAfterCache` hook fires and **removes** the public URL from every `isPublic` zone:
+
+```php
+$wgHooks['SetupAfterCache'][] = static function () {
+    global $cwPrivate, $wgLocalFileRepo, $wgAWSRepoZones;
+    if ( !$cwPrivate ) { return true; }
+
+    foreach ( $wgAWSRepoZones as $zone => $zoneInfo ) {
+        if ( !empty( $zoneInfo['isPublic'] ) ) {
+            unset( $wgLocalFileRepo['zones'][$zone]['url'] );
+        }
+    }
+    return true;
+};
+```
+
+With the URL unset, MediaWiki falls back to serving files through `img_auth.php` (`$wgUploadPath = '/w/img_auth.php'`), which enforces wiki read permissions before streaming file content. Direct R2 URLs are never exposed.
+
+## Configuring PrivateSettings.php
+
+<Steps>
+  <Step title="Create the file">
+    On each application server, create `/srv/mediawiki/config/PrivateSettings.php`. The file must begin with `<?php` and must **not** be inside the Git working directory.
+  </Step>
+  <Step title="Set database credentials">
+    Define `$wgDBuser`, `$wgDBpassword`, and the `$wgDBservers` array. Ensure the database user exists on all cluster nodes and has the required privileges.
+    ```php
+    $wgDBuser     = 'mediawiki';
+    $wgDBpassword = 'your-db-password';
+    $wgDBservers  = [
+        [
+            'host'     => 'db-c1-us-east-021',
+            'user'     => 'mediawiki',
+            'password' => 'your-db-password',
+            'type'     => 'mysql',
+            'flags'    => DBO_DEFAULT,
+        ],
+    ];
+    ```
+  </Step>
+  <Step title="Generate and set the secret key">
+    ```bash
+    openssl rand -hex 32
+    ```
+    Paste the output as `$wgSecretKey`. The same value must be deployed to every application server.
+  </Step>
+  <Step title="Set R2 credentials and endpoint">
+    Obtain the access key ID, secret, and endpoint URL from the Cloudflare R2 dashboard. The endpoint URL is account-specific.
+    ```php
+    $wgR2Key      = 'your-r2-access-key-id';
+    $wgR2Secret   = 'your-r2-secret-access-key';
+    $wgR2Endpoint = 'https://<account-id>.r2.cloudflarestorage.com';
+    ```
+  </Step>
+  <Step title="Set the Sentry DSN">
+    ```php
+    $sentryDSN = 'https://<key>@<host>/<project-id>';
+    ```
+    The DSN is available in your Sentry project's settings under **Client Keys (DSN)**.
+  </Step>
+  <Step title="Set OAuth key paths">
+    The OAuth private key path is configured here; the public key path is already set in `LocalSettings.php`:
+    ```php
+    // In PrivateSettings.php — private key only
+    // $wgOAuth2PrivateKey is set in LocalSettings.php to:
+    //   /srv/mediawiki/config/OAuth.key
+    // Ensure that file exists and is readable by the web user.
+    ```
+    Generate an RSA key pair if one does not exist:
+    ```bash
+    openssl genrsa -out /srv/mediawiki/config/OAuth.key 2048
+    openssl rsa -in /srv/mediawiki/config/OAuth.key \
+        -pubout -out /srv/mediawiki/config/OAuth.key.pub
+    ```
+    Commit `OAuth.key.pub` to the repository. Keep `OAuth.key` on disk only.
+  </Step>
+  <Step title="Set global Discord webhook (optional)">
+    If Discord notifications are used, add the global webhook URL:
+    ```php
+    $wmgGlobalDiscordWebhookUrl = 'https://discord.com/api/webhooks/...';
+    ```
+    This variable is read in `GlobalSettings.php` and assigned as `$wgDiscordIncomingWebhookUrl` for public wikis.
+  </Step>
+  <Step title="Verify permissions">
+    Ensure the file is **not** world-readable:
+    ```bash
+    chmod 640 /srv/mediawiki/config/PrivateSettings.php
+    chown root:www-data /srv/mediawiki/config/PrivateSettings.php
+    ```
+  </Step>
+</Steps>

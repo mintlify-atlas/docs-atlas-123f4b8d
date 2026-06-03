@@ -1,0 +1,141 @@
+---
+title: "WikiFarmMultiVersion — Per-Wiki Version Overrides"
+sidebarTitle: "MultiVersion"
+description: "Reference for WikiFarmMultiVersion: how per-wiki MediaWiki version overrides are stored, read, and injected into the CreateWiki cache."
+---
+
+`WikiFarmMultiVersion` is a small but critical class in `MultiVersion.php` that provides a fast-path mechanism for per-wiki MediaWiki version overrides. While the farm's primary version data lives in the `databases.php` CreateWiki cache, that cache is rebuilt asynchronously. `WikiFarmMultiVersion` bridges the gap by maintaining a lightweight PHP file — `wikiVersions.php` — that is read on every request and takes precedence over whatever is stored in the databases cache. This means a version change made through Special:ManageWiki/core is visible to the web server on the very next request, without waiting for a full cache regeneration.
+
+<Note>
+  The ManageWiki UI forms (`onManageWikiCoreAddFormFields` / `onManageWikiCoreFormSubmission`) that surface the version selector are handled by `MirahezeFunctions`, not by this class. `WikiFarmMultiVersion` is solely responsible for the on-disk fast-path file.
+</Note>
+
+## VERSIONS_FILE Constant
+
+| Constant | Value |
+|---|---|
+| `VERSIONS_FILE` | `/srv/mediawiki/config/wikiVersions.php` |
+
+This file is the single source of truth for per-wiki version overrides. It is a PHP file that returns an associative array keyed by database name. The file is read with `@include` (suppressing errors on a missing file) and written atomically using a temp-file and `rename()`.
+
+### File Format
+
+```php
+<?php
+/**
+ * Per-wiki MediaWiki version overrides.
+ * Managed automatically by WikiFarmMultiVersion::setWikiVersion().
+ */
+return [
+    'examplewiki' => '1.45',
+    'anotherwiki' => '1.46',
+];
+```
+
+<Note>
+  Only wikis with a version **different from the farm default** appear in this file. When a wiki's override is removed (by passing `null` or the default version to `setWikiVersion()`), its entry is deleted from the file rather than set to the default value.
+</Note>
+
+## Static Methods
+
+<Accordion title="getWikiVersion(string $dbname): string">
+
+**Signature:** `public static function getWikiVersion( string $dbname ): string`
+
+Reads `wikiVersions.php` and returns the stored version for `$dbname`. If the file does not exist, cannot be parsed, or does not contain an entry for `$dbname`, falls back to the farm default version by resolving:
+
+```php
+MirahezeFunctions::MEDIAWIKI_VERSIONS[
+    MirahezeFunctions::getDefaultMediaWikiVersion()
+]
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `$dbname` | `string` | The wiki's database name (e.g. `examplewiki`) |
+
+**Returns:** `string` — A version number string such as `'1.45'` or `'1.46'`.
+
+**Example:**
+
+```php
+$version = WikiFarmMultiVersion::getWikiVersion( 'examplewiki' );
+// Returns '1.45' if overridden, or the farm default otherwise
+```
+
+</Accordion>
+
+<Accordion title="setWikiVersion(string $dbname, ?string $version): void">
+
+**Signature:** `public static function setWikiVersion( string $dbname, ?string $version ): void`
+
+Atomically writes a new version mapping for `$dbname` into `wikiVersions.php`. The write is performed using a process-specific temp file (`wikiVersions.php.tmp.<pid>`) that is then `rename()`d over the target, preventing any request from reading a partially-written file during concurrent access.
+
+After writing, the method invalidates the wiki's per-wiki CreateWiki cache file (`cw_cache/{dbname}.php`) by deleting it, ensuring the next request rebuilds from fresh data.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `$dbname` | `string` | The wiki's database name |
+| `$version` | `string\|null` | The version string to set (e.g. `'1.46'`), or `null` to remove the override and revert to farm default |
+
+**Passing `null` or the farm default removes the override entirely:**
+
+```php
+// Set a specific version
+WikiFarmMultiVersion::setWikiVersion( 'examplewiki', '1.46' );
+
+// Remove the override — wiki reverts to farm default
+WikiFarmMultiVersion::setWikiVersion( 'examplewiki', null );
+```
+
+<Warning>
+  The temp-file + rename pattern is safe for concurrent web requests but assumes the filesystem supports atomic renames (which is true for all standard Linux filesystems). Do **not** write directly to `wikiVersions.php` by hand — always use this method to avoid leaving the file in a partially-written state.
+</Warning>
+
+</Accordion>
+
+<Accordion title="onCreateWikiPhpBuilder(string $dbname, array &$cacheData): void">
+
+**Signature:** `public static function onCreateWikiPhpBuilder( string $dbname, array &$cacheData ): void`
+
+This is a hook handler for the `CreateWikiPhpBuilder` hook fired by the CreateWiki extension when it rebuilds the `databases.php` cache for a wiki. It reads `wikiVersions.php` and, if an override exists for `$dbname`, injects it as the `'v'` key into `$cacheData` by reference. This keeps the databases cache in sync with the fast-path file so that `MirahezeFunctions::getMediaWikiVersion()` sees the same version regardless of which source it checks first.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `$dbname` | `string` | The wiki being rebuilt |
+| `$cacheData` | `array&` | The cache data array being written; modified in place |
+
+The injected `'v'` key **overrides** any version previously stored in the `wiki_extra` JSON column of `cw_wikis`.
+
+</Accordion>
+
+## Integration with MirahezeFunctions
+
+`MirahezeFunctions::getMediaWikiVersion()` checks `wikiVersions.php` **before** reading the `databases.php` cache, implementing this resolution chain:
+
+<Steps>
+  <Step title="Environment override">
+    If the `MIRAHEZE_WIKI_VERSION` environment variable is set, that value is used unconditionally.
+  </Step>
+  <Step title="wikiVersions.php fast-path">
+    `wikiVersions.php` is included and checked for the current database name. If found, that version is returned immediately — no cache file read is needed.
+  </Step>
+  <Step title="databases.php cache">
+    The `'v'` key from the wiki's entry in `databases.php` is used. This value is kept current by the `onCreateWikiPhpBuilder` hook.
+  </Step>
+  <Step title="Farm default">
+    Falls back to `MEDIAWIKI_VERSIONS[getDefaultMediaWikiVersion()]` — `'1.45'` on production, `'1.45'` on staging.
+  </Step>
+</Steps>
+
+## ManageWiki Integration
+
+<Note>
+  Version changes are surfaced to administrators via **Special:ManageWiki/core**, which shows a `mediawiki-version` select field populated by `onManageWikiCoreAddFormFields()` in `MirahezeFunctions`. Only users with the `managewiki-restricted` right can change a wiki's MediaWiki version.
+</Note>
+
+When a version change is submitted, `onManageWikiCoreFormSubmission()` calls `WikiFarmMultiVersion::setWikiVersion()` for the immediate fast-path update, and also stores the value persistently via `ManageWikiCore::setExtraFieldData()` so it survives a full cache rebuild.
+
+<Tip>
+  If you need to force a wiki back to the farm default version without going through the UI, delete the entry from `wikiVersions.php` by calling `WikiFarmMultiVersion::setWikiVersion( 'yourwiki', null )` from the CLI.
+</Tip>

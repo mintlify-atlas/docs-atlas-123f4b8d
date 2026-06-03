@@ -1,0 +1,122 @@
+---
+title: "WikiOasis mw-config: MediaWiki Farm Config Overview"
+sidebarTitle: "Introduction"
+description: "Learn what WikiOasis mw-config is, how it powers wikioasis.org and skywiki.org, and the key constants that drive every wiki on the farm."
+---
+
+WikiOasis mw-config is the production MediaWiki farm configuration that powers every wiki hosted across the WikiOasis and SkyWiki platforms. Forked from the upstream [miraheze/mw-config](https://github.com/miraheze/mw-config) project, it provides a single, version-controlled repository containing all of the PHP configuration files, extension registries, and per-wiki override tables required to serve hundreds of independently managed wikis from a shared MediaWiki installation. The entire codebase is published under the **GNU General Public License v3.0**, meaning you are free to study, modify, and redistribute it under those same terms.
+
+<Note>
+  WikiOasis mw-config is a fork of [miraheze/mw-config](https://github.com/miraheze/mw-config). While it shares architectural patterns and class names with the upstream project, it has been independently adapted for WikiOasis infrastructure, domains, and services. Changes made here do not automatically flow back upstream.
+</Note>
+
+## The Two Realms
+
+The farm is divided into two distinct realms that share code but are completely isolated at the database and domain level.
+
+<CardGroup cols={2}>
+  <Card title="Production Realm" icon="globe">
+    Serves live wikis on **wikioasis.org** and **skywiki.org**. Database names use the `wiki` suffix (e.g., `examplewiki`). The central coordination database is `metawiki` and the global shared database is `wikidb`. Authentication runs through `accounts.wikioasis.org`.
+  </Card>
+  <Card title="Beta Realm" icon="flask">
+    Serves staging wikis on **betaoasis.xyz** for testing new MediaWiki versions and configuration changes before they reach production. Database names use the `wikibeta` suffix. The central database is `metawikibeta` and the global database is `wikidbbeta`. The beta server hostname is `staging11`. Authentication runs through `accounts.betaoasis.xyz`.
+  </Card>
+</CardGroup>
+
+## Key Constants in MirahezeFunctions
+
+`MirahezeFunctions.php` is the heart of the farm. Its `MirahezeFunctions` class defines a set of private and public PHP constants that every part of the configuration relies on. Understanding these constants is essential before reading any other file.
+
+<Accordion title="ALLOWED_DOMAINS">
+  Defines the valid public-facing domains for each realm. Wiki requests are only accepted when the `HTTP_HOST` header matches one of these entries.
+
+  ```php
+  private const ALLOWED_DOMAINS = [
+      'default' => [
+          'wikioasis.org',
+          'skywiki.org',
+      ],
+      'beta' => [
+          'betaoasis.xyz',
+      ],
+  ];
+  ```
+</Accordion>
+
+<Accordion title="BETA_HOSTNAME">
+  The server hostname that identifies the beta environment. When `php_uname('n')` returns this value, the farm switches to the `wikibeta` suffix and beta-realm databases.
+
+  ```php
+  private const BETA_HOSTNAME = 'staging11';
+  ```
+</Accordion>
+
+<Accordion title="CACHE_DIRECTORY">
+  The filesystem path where per-wiki configuration cache files (e.g., `examplewiki.php`, `config-examplewiki.php`, `databases.php`) are stored. MirahezeFunctions reads and writes these files to avoid re-computing `SiteConfiguration` on every request.
+
+  ```php
+  public const CACHE_DIRECTORY = '/srv/mediawiki/cw_cache';
+  ```
+</Accordion>
+
+<Accordion title="CENTRAL_DATABASE">
+  The wiki database that hosts farm-wide coordination tables (CreateWiki, ImportDump, RequestCustomDomain, Interwiki, etc.). Each realm has its own central database.
+
+  ```php
+  private const CENTRAL_DATABASE = [
+      'default' => 'metawiki',
+      'beta'    => 'metawikibeta',
+  ];
+  ```
+</Accordion>
+
+<Accordion title="GLOBAL_DATABASE">
+  The database that stores cross-wiki shared tables (CentralAuth, GlobalBlocking, ManageWiki, OATHAuth, CheckUser, LoginNotify, and more). All wikis in a realm share a single global database.
+
+  ```php
+  private const GLOBAL_DATABASE = [
+      'default' => 'wikidb',
+      'beta'    => 'wikidbbeta',
+  ];
+  ```
+</Accordion>
+
+<Accordion title="MEDIAWIKI_VERSIONS">
+  The three named MediaWiki release tracks the farm supports. Individual wikis can be pinned to a specific track via `Special:ManageWiki/core` or via `wikiVersions.php`. The `stable` track is the default for production wikis; `beta` is the default on the staging server; `alpha` allows opt-in testing of the next unreleased branch.
+
+  ```php
+  public const MEDIAWIKI_VERSIONS = [
+      'alpha'  => '1.46',
+      'beta'   => '1.45',
+      'stable' => '1.45',
+  ];
+  ```
+</Accordion>
+
+<Accordion title="SUFFIXES">
+  Maps each database suffix to its array of allowed public domains. The suffix is appended to a wiki's subdomain to form its database name (e.g., subdomain `example` on `wikioasis.org` → database `examplewiki`).
+
+  ```php
+  public const SUFFIXES = [
+      'wiki'     => self::ALLOWED_DOMAINS['default'], // wikioasis.org, skywiki.org
+      'wikibeta' => self::ALLOWED_DOMAINS['beta'],    // betaoasis.xyz
+  ];
+  ```
+</Accordion>
+
+## Explore the Documentation
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand the full request lifecycle, the configuration pipeline, and the responsibilities of every file in the repository.
+  </Card>
+  <Card title="LocalSettings Reference" icon="file-code" href="/setup/localsettings">
+    Deep-dive into how LocalSettings.php bootstraps the farm, populates `$wgConf->settings`, and wires together all configuration layers.
+  </Card>
+  <Card title="Creating Wikis" icon="plus" href="/wikis/creating-wikis">
+    Learn how CreateWiki and ManageWiki work together to provision new wikis, assign database clusters, and generate cache files.
+  </Card>
+  <Card title="MirahezeFunctions Reference" icon="book" href="/reference/miraheze-functions">
+    Full API reference for the `MirahezeFunctions` class — every public method, constant, and hook handler documented.
+  </Card>
+</CardGroup>
